@@ -20,6 +20,9 @@ const fs = require('fs');
 const utils = require('./utils');
 const { makeUserDataDir, removeUserDataDir } = require('./utils');
 
+/**
+ * @type {TestSuite}
+ */
 module.exports.describe = function({testRunner, expect, defaultBrowserOptions, playwright, playwrightPath, product, CHROMIUM, FFOX, WEBKIT, WIN}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -36,13 +39,22 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
         await neverResolves;
         expect(error.message).toContain('Protocol error');
       });
+      it('should throw if userDataDir option is passed', async() => {
+        let waitError = null;
+        const options = Object.assign({}, defaultBrowserOptions, {userDataDir: 'random-path'});
+        await playwright.launch(options).catch(e => waitError = e);
+        expect(waitError.message).toContain('launchPersistent');
+      });
       it('should reject if executable path is invalid', async({server}) => {
         let waitError = null;
         const options = Object.assign({}, defaultBrowserOptions, {executablePath: 'random-invalid-path'});
         await playwright.launch(options).catch(e => waitError = e);
         expect(waitError.message).toContain('Failed to launch');
       });
-      if('should have default URL when launching browser', async function() {
+    });
+
+    describe('Playwright.launchPersistent', function() {
+      it('should have default URL when launching browser', async function() {
         const userDataDir = await makeUserDataDir();
         const browserContext = await playwright.launchPersistent(userDataDir, defaultBrowserOptions);
         const pages = (await browserContext.pages()).map(page => page.url());
@@ -65,12 +77,20 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
         await browserContext.close();
         await removeUserDataDir(userDataDir);
       });
+    });
+
+    describe('Playwright.launchServer', function() {
       it('should return child_process instance', async () => {
-        const userDataDir = await makeUserDataDir();
-        const browserServer = await playwright.launchServer(userDataDir, defaultBrowserOptions);
+        const browserServer = await playwright.launchServer(defaultBrowserOptions);
         expect(browserServer.process().pid).toBeGreaterThan(0);
         await browserServer.close();
-        await removeUserDataDir(userDataDir);
+      });
+      it('should fire close event', async () => {
+        const browserServer = await playwright.launchServer(defaultBrowserOptions);
+        await Promise.all([
+          utils.waitEvent(browserServer, 'close'),
+          browserServer.close(),
+        ]);
       });
     });
 
@@ -142,7 +162,7 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
       await server.waitForRequest('/one-style.css');
       await remote.close();
       const error = await navigationPromise;
-      expect(error.message).toBe('Navigation failed because browser has disconnected!');
+      expect(error.message).toContain('Navigation failed because browser has disconnected!');
       await browserServer.close();
     });
     it('should reject waitForSelector when browser closes', async({server}) => {
@@ -151,7 +171,7 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
       const remote = await playwright.connect({ wsEndpoint: browserServer.wsEndpoint() });
       const page = await remote.newPage();
       const watchdog = page.waitForSelector('div', { timeout: 60000 }).catch(e => e);
-      
+
       // Make sure the previous waitForSelector has time to make it to the browser before we disconnect.
       await page.waitForSelector('body');
 
@@ -169,10 +189,23 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
       expect(error.message).toContain('has been closed');
       await browserServer.close();
     });
+    it('should emit close events on pages and contexts', async({server}) => {
+      const browserServer = await playwright.launchServer({...defaultBrowserOptions });
+      const remote = await playwright.connect({ wsEndpoint: browserServer.wsEndpoint() });
+      const context = await remote.newContext();
+      const page = await context.newPage();
+      let pageClosed = false;
+      page.on('close', e => pageClosed = true);
+      await Promise.all([
+        new Promise(f => context.on('close', f)),
+        browserServer.close()
+      ]);
+      expect(pageClosed).toBeTruthy();
+    });
   });
 
   describe('Browser.close', function() {
-    it('should terminate network waiters', async({context, server}) => {
+    it('should terminate network waiters', async({server}) => {
       const browserServer = await playwright.launchServer({...defaultBrowserOptions });
       const remote = await playwright.connect({ wsEndpoint: browserServer.wsEndpoint() });
       const newPage = await remote.newPage();

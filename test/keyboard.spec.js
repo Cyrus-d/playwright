@@ -18,6 +18,9 @@
 const utils = require('./utils');
 const os = require('os');
 
+/**
+ * @type {PageTestSuite}
+ */
 module.exports.describe = function({testRunner, expect, FFOX, CHROMIUM, WEBKIT, MAC}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -33,14 +36,6 @@ module.exports.describe = function({testRunner, expect, FFOX, CHROMIUM, WEBKIT, 
       const text = 'Hello world. I am the text that was typed!';
       await page.keyboard.type(text);
       expect(await page.evaluate(() => document.querySelector('textarea').value)).toBe(text);
-    });
-    it('should press the metaKey', async({page, server}) => {
-      await page.goto(server.PREFIX + '/empty.html');
-      await page.evaluate(() => {
-        window.keyPromise = new Promise(resolve => document.addEventListener('keydown', event => resolve(event.key)));
-      });
-      await page.keyboard.press('Meta');
-      expect(await page.evaluate('keyPromise')).toBe(FFOX && !MAC ? 'OS' : 'Meta');
     });
     it('should move with the arrow keys', async({page, server}) => {
       await page.goto(server.PREFIX + '/input/textarea.html');
@@ -68,7 +63,7 @@ module.exports.describe = function({testRunner, expect, FFOX, CHROMIUM, WEBKIT, 
       await textarea.press('b');
       expect(await page.evaluate(() => document.querySelector('textarea').value)).toBe('a');
     });
-    it.skip(FFOX)('ElementHandle.press should support |text| option', async({page, server}) => {
+    it('ElementHandle.press should support |text| option', async({page, server}) => {
       await page.goto(server.PREFIX + '/input/textarea.html');
       const textarea = await page.$('textarea');
       await textarea.press('a', {text: 'ё'});
@@ -203,6 +198,25 @@ module.exports.describe = function({testRunner, expect, FFOX, CHROMIUM, WEBKIT, 
 
       await textarea.press('NumpadSubtract');
       expect(await page.evaluate('keyLocation')).toBe(3);
+    });
+    it('should press Enter', async({page, server}) => {
+      await page.setContent('<textarea></textarea>');
+      await page.focus('textarea');
+      await page.evaluate(() => window.addEventListener('keydown', e => window.lastEvent = {key: e.key, code:e.code}));
+      await testEnterKey('Enter', 'Enter', 'Enter');
+      await testEnterKey('NumpadEnter', 'Enter', 'NumpadEnter');
+      await testEnterKey('\n', 'Enter', 'Enter');
+      await testEnterKey('\r', 'Enter', 'Enter');
+
+      async function testEnterKey(key, expectedKey, expectedCode) {
+        await page.keyboard.press(key);
+        const lastEvent = await page.evaluate('lastEvent');
+        expect(lastEvent.key).toBe(expectedKey, `${JSON.stringify(key)} had the wrong key: ${lastEvent.key}`);
+        expect(lastEvent.code).toBe(expectedCode, `${JSON.stringify(key)} had the wrong code: ${lastEvent.code}`);
+        const value = await page.$eval('textarea', t => t.value);
+        expect(value).toBe('\n', `${JSON.stringify(key)} failed to create a newline: ${JSON.stringify(value)}`);
+        await page.$eval('textarea', t => t.value = '');
+      }
     });
     it('should throw on unknown keys', async({page, server}) => {
       let error = await page.keyboard.press('NotARealKey').catch(e => e);

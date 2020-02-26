@@ -69,10 +69,11 @@ export interface PageDelegate {
   setInputFiles(handle: dom.ElementHandle<HTMLInputElement>, files: types.FilePayload[]): Promise<void>;
   getBoundingBox(handle: dom.ElementHandle): Promise<types.Rect | null>;
   getFrameElement(frame: frames.Frame): Promise<dom.ElementHandle>;
+  scrollRectIntoViewIfNeeded(handle: dom.ElementHandle, rect?: types.Rect): Promise<void>;
 
   getAccessibilityTree(needle?: dom.ElementHandle): Promise<{tree: accessibility.AXNode, needle: accessibility.AXNode | null}>;
   pdf?: (options?: types.PDFOptions) => Promise<platform.BufferType>;
-  coverage(): Coverage | undefined;
+  coverage?: () => any;
 }
 
 type PageState = {
@@ -111,8 +112,9 @@ export class Page extends platform.EventEmitter {
   readonly accessibility: accessibility.Accessibility;
   private _workers = new Map<string, Worker>();
   readonly pdf: ((options?: types.PDFOptions) => Promise<platform.BufferType>) | undefined;
-  readonly coverage: Coverage | undefined;
+  readonly coverage: any;
   readonly _requestHandlers: { url: types.URLMatch, handler: (request: network.Request) => void }[] = [];
+  _ownedContext: BrowserContext | undefined;
 
   constructor(delegate: PageDelegate, browserContext: BrowserContext) {
     super();
@@ -143,12 +145,12 @@ export class Page extends platform.EventEmitter {
     this.accessibility = new accessibility.Accessibility(delegate.getAccessibilityTree.bind(delegate));
     this.keyboard = new input.Keyboard(delegate.rawKeyboard);
     this.mouse = new input.Mouse(delegate.rawMouse, this.keyboard);
-    this._timeoutSettings = new TimeoutSettings();
+    this._timeoutSettings = new TimeoutSettings(browserContext._timeoutSettings);
     this._screenshotter = new Screenshotter(this);
     this._frameManager = new frames.FrameManager(this);
     if (delegate.pdf)
       this.pdf = delegate.pdf.bind(delegate);
-    this.coverage = delegate.coverage();
+    this.coverage = delegate.coverage ? delegate.coverage() : null;
   }
 
   _didClose() {
@@ -181,7 +183,7 @@ export class Page extends platform.EventEmitter {
     this.emit(Events.Page.FileChooser, fileChooser);
   }
 
-  browserContext(): BrowserContext {
+  context(): BrowserContext {
     return this._browserContext;
   }
 
@@ -211,6 +213,10 @@ export class Page extends platform.EventEmitter {
 
   async waitForSelector(selector: string, options?: types.TimeoutOptions & { visibility?: types.Visibility }): Promise<dom.ElementHandle<Element> | null> {
     return this.mainFrame().waitForSelector(selector, options);
+  }
+
+  async $wait(selector: string, options?: types.TimeoutOptions & { visibility?: types.Visibility }): Promise<dom.ElementHandle<Element> | null> {
+    return this.mainFrame().$wait(selector, options);
   }
 
   evaluateHandle: types.EvaluateHandle = async (pageFunction, ...args) => {
@@ -266,7 +272,7 @@ export class Page extends platform.EventEmitter {
     for (const key of Object.keys(headers)) {
       const value = headers[key];
       assert(helper.isString(value), `Expected value of header "${key}" to be String, but "${typeof value}" is found.`);
-      this._state.extraHTTPHeaders[key.toLowerCase()] = value;
+      this._state.extraHTTPHeaders[key] = value;
     }
     return this._delegate.setExtraHTTPHeaders(headers);
   }
@@ -352,7 +358,7 @@ export class Page extends platform.EventEmitter {
   async waitForRequest(urlOrPredicate: string | RegExp | ((r: network.Request) => boolean), options: types.TimeoutOptions = {}): Promise<network.Request> {
     const { timeout = this._timeoutSettings.timeout() } = options;
     return helper.waitForEvent(this, Events.Page.Request, (request: network.Request) => {
-      if (helper.isString(urlOrPredicate) || urlOrPredicate instanceof RegExp)
+      if (helper.isString(urlOrPredicate) || helper.isRegExp(urlOrPredicate))
         return platform.urlMatches(request.url(), urlOrPredicate);
       return urlOrPredicate(request);
     }, timeout, this._disconnectedPromise);
@@ -361,7 +367,7 @@ export class Page extends platform.EventEmitter {
   async waitForResponse(urlOrPredicate: string | RegExp | ((r: network.Response) => boolean), options: types.TimeoutOptions = {}): Promise<network.Response> {
     const { timeout = this._timeoutSettings.timeout() } = options;
     return helper.waitForEvent(this, Events.Page.Response, (response: network.Response) => {
-      if (helper.isString(urlOrPredicate) || urlOrPredicate instanceof RegExp)
+      if (helper.isString(urlOrPredicate) || helper.isRegExp(urlOrPredicate))
         return platform.urlMatches(response.url(), urlOrPredicate);
       return urlOrPredicate(response);
     }, timeout, this._disconnectedPromise);
@@ -471,49 +477,51 @@ export class Page extends platform.EventEmitter {
     await this._delegate.closePage(runBeforeUnload);
     if (!runBeforeUnload)
       await this._closedPromise;
+    if (this._ownedContext)
+      await this._ownedContext.close();
   }
 
   isClosed(): boolean {
     return this._closed;
   }
 
-  async click(selector: string, options?: frames.WaitForOptions & input.ClickOptions) {
+  async click(selector: string, options?: dom.ClickOptions & types.WaitForOptions) {
     return this.mainFrame().click(selector, options);
   }
 
-  async dblclick(selector: string, options?: frames.WaitForOptions & input.MultiClickOptions) {
+  async dblclick(selector: string, options?: dom.MultiClickOptions & types.WaitForOptions) {
     return this.mainFrame().dblclick(selector, options);
   }
 
-  async tripleclick(selector: string, options?: frames.WaitForOptions & input.MultiClickOptions) {
+  async tripleclick(selector: string, options?: dom.MultiClickOptions & types.WaitForOptions) {
     return this.mainFrame().tripleclick(selector, options);
   }
 
-  async fill(selector: string, value: string, options?: frames.WaitForOptions) {
+  async fill(selector: string, value: string, options?: types.WaitForOptions) {
     return this.mainFrame().fill(selector, value, options);
   }
 
-  async focus(selector: string, options?: frames.WaitForOptions) {
+  async focus(selector: string, options?: types.WaitForOptions) {
     return this.mainFrame().focus(selector, options);
   }
 
-  async hover(selector: string, options?: frames.WaitForOptions & input.PointerActionOptions) {
+  async hover(selector: string, options?: dom.PointerActionOptions & types.WaitForOptions) {
     return this.mainFrame().hover(selector, options);
   }
 
-  async select(selector: string, value: string | dom.ElementHandle | types.SelectOption | string[] | dom.ElementHandle[] | types.SelectOption[] | undefined, options?: frames.WaitForOptions): Promise<string[]> {
+  async select(selector: string, value: string | dom.ElementHandle | types.SelectOption | string[] | dom.ElementHandle[] | types.SelectOption[] | undefined, options?: types.WaitForOptions): Promise<string[]> {
     return this.mainFrame().select(selector, value, options);
   }
 
-  async type(selector: string, text: string, options?: frames.WaitForOptions & { delay?: number }) {
+  async type(selector: string, text: string, options?: { delay?: number } & types.WaitForOptions) {
     return this.mainFrame().type(selector, text, options);
   }
 
-  async check(selector: string, options?: frames.WaitForOptions) {
+  async check(selector: string, options?: types.WaitForOptions) {
     return this.mainFrame().check(selector, options);
   }
 
-  async uncheck(selector: string, options?: frames.WaitForOptions) {
+  async uncheck(selector: string, options?: types.WaitForOptions) {
     return this.mainFrame().uncheck(selector, options);
   }
 
@@ -523,10 +531,6 @@ export class Page extends platform.EventEmitter {
 
   async waitForFunction(pageFunction: Function | string, options?: types.WaitForFunctionOptions, ...args: any[]): Promise<js.JSHandle> {
     return this.mainFrame().waitForFunction(pageFunction, options, ...args);
-  }
-
-  $wait: types.$Wait = async (selector, pageFunction, options, ...args) => {
-    return this.mainFrame().$wait(selector, pageFunction, options, ...args as any);
   }
 
   workers(): Worker[] {
@@ -598,11 +602,4 @@ export class Worker {
   evaluateHandle: types.EvaluateHandle = async (pageFunction, ...args) => {
     return (await this._executionContextPromise).evaluateHandle(pageFunction, ...args as any);
   }
-}
-
-export interface Coverage {
-  startJSCoverage(options?: types.JSCoverageOptions): Promise<void>;
-  stopJSCoverage(): Promise<types.CoverageEntry[]>;
-  startCSSCoverage(options?: types.CSSCoverageOptions): Promise<void>;
-  stopCSSCoverage(): Promise<types.CoverageEntry[]>;
 }

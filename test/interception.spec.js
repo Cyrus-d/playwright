@@ -19,7 +19,11 @@ const fs = require('fs');
 const path = require('path');
 const { helper } = require('../lib/helper');
 const utils = require('./utils');
+const vm = require('vm');
 
+/**
+ * @type {PageTestSuite}
+ */
 module.exports.describe = function({testRunner, expect, defaultBrowserOptions, playwright, FFOX, CHROMIUM, WEBKIT}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -271,7 +275,7 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
       expect(text).toBe('<div>yo</div>');
       expect(requests.length).toBe(0);
     });
-    it.skip(FFOX)('should navigate to URL with hash and and fire requests without hash', async({page, server}) => {
+    it('should navigate to URL with hash and and fire requests without hash', async({page, server}) => {
       const requests = [];
       await page.route('**/*', request => {
         requests.push(request);
@@ -322,9 +326,10 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
       await request.continue().catch(e => error = e);
       expect(error).toBe(null);
     });
-    it('should throw if interception is not enabled', async({newPage, server}) => {
+    it('should throw if interception is not enabled', async({browser, server}) => {
       let error = null;
-      const page = await newPage();
+      const context = await browser.newContext();
+      const page = await context.newPage();
       page.on('request', async request => {
         try {
           await request.continue();
@@ -334,6 +339,7 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
       });
       await page.goto(server.EMPTY_PAGE);
       expect(error.message).toContain('Request Interception is not enabled');
+      await context.close();
     });
     it('should intercept main resource during cross-process navigation', async({page, server}) => {
       await page.goto(server.EMPTY_PAGE);
@@ -349,22 +355,20 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
     it('should not throw when continued after navigation', async({page, server}) => {
       await page.route(server.PREFIX + '/one-style.css', () => {});
       // For some reason, Firefox issues load event with one outstanding request.
-      const failed = page.goto(server.PREFIX + '/one-style.html', { waitUntil: FFOX ? 'networkidle0' : 'load' }).catch(e => e);
+      const firstNavigation = page.goto(server.PREFIX + '/one-style.html', { waitUntil: FFOX ? 'networkidle0' : 'load' }).catch(e => e);
       const request = await page.waitForRequest(server.PREFIX + '/one-style.css');
       await page.goto(server.PREFIX + '/empty.html');
-      const error = await failed;
-      expect(error.message).toBe('Navigation to ' + server.PREFIX + '/one-style.html was canceled by another one');
+      await firstNavigation;
       const notAnError = await request.continue().then(() => null).catch(e => e);
       expect(notAnError).toBe(null);
     });
     it('should not throw when continued after cross-process navigation', async({page, server}) => {
       await page.route(server.PREFIX + '/one-style.css', () => {});
       // For some reason, Firefox issues load event with one outstanding request.
-      const failed = page.goto(server.PREFIX + '/one-style.html', { waitUntil: FFOX ? 'networkidle0' : 'load' }).catch(e => e);
+      const firstNavigation = page.goto(server.PREFIX + '/one-style.html', { waitUntil: FFOX ? 'networkidle0' : 'load' }).catch(e => e);
       const request = await page.waitForRequest(server.PREFIX + '/one-style.css');
       await page.goto(server.CROSS_PROCESS_PREFIX + '/empty.html');
-      const error = await failed;
-      expect(error.message).toBe('Navigation to ' + server.PREFIX + '/one-style.html was canceled by another one');
+      await firstNavigation;
       const notAnError = await request.continue().then(() => null).catch(e => e);
       expect(notAnError).toBe(null);
     });
@@ -557,12 +561,43 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
   });
 
   describe('ignoreHTTPSErrors', function() {
-    it('should work with request interception', async({newPage, httpsServer}) => {
-      const page = await newPage({ ignoreHTTPSErrors: true, interceptNetwork: true });
+    it('should work with request interception', async({browser, httpsServer}) => {
+      const context = await browser.newContext({ ignoreHTTPSErrors: true, interceptNetwork: true });
+      const page = await context.newPage();
 
       await page.route('**/*', request => request.continue());
       const response = await page.goto(httpsServer.EMPTY_PAGE);
       expect(response.status()).toBe(200);
+      await context.close();
+    });
+  });
+
+  describe('service worker', function() {
+    it('should intercept after a service worker', async({browser, page, server, context}) => {
+      await page.goto(server.PREFIX + '/serviceworkers/fetchdummy/sw.html');
+      await page.evaluate(() => window.activationPromise);
+
+      // Sanity check.
+      const swResponse = await page.evaluate(() => fetchDummy('foo'));
+      expect(swResponse).toBe('responseFromServiceWorker:foo');
+
+      await page.route('**/foo', request => {
+        const slash = request.url().lastIndexOf('/');
+        const name = request.url().substring(slash + 1);
+        request.fulfill({
+          status: 200,
+          contentType: 'text/css',
+          body: 'responseFromInterception:' + name
+        });
+      });
+
+      // Page route is applied after service worker fetch event.
+      const swResponse2 = await page.evaluate(() => fetchDummy('foo'));
+      expect(swResponse2).toBe('responseFromServiceWorker:foo');
+
+      // Page route is not applied to service worker initiated fetch.
+      const nonInterceptedResponse = await page.evaluate(() => fetchDummy('passthrough'));
+      expect(nonInterceptedResponse).toBe('FAILURE: Not Found');
     });
   });
 
@@ -581,7 +616,29 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
       expect(helper.globToRegex('**/*.{png,jpg,jpeg}').test('https://localhost:8080/c.jpg')).toBeTruthy();
       expect(helper.globToRegex('**/*.{png,jpg,jpeg}').test('https://localhost:8080/c.jpeg')).toBeTruthy();
       expect(helper.globToRegex('**/*.{png,jpg,jpeg}').test('https://localhost:8080/c.png')).toBeTruthy();
-      expect(helper.globToRegex('**/*.{png,jpg,jpeg}').test('https://localhost:8080/c.css')).toBeFalsy();      
+      expect(helper.globToRegex('**/*.{png,jpg,jpeg}').test('https://localhost:8080/c.css')).toBeFalsy();
+    });
+  });
+
+  describe('regexp', function() {
+    it('should work with regular expression passed from a different context', async({page, server}) => {
+      const ctx = vm.createContext();
+      const regexp = vm.runInContext('new RegExp("empty\\.html")', ctx);
+
+      await page.route(regexp, request => {
+        expect(request.url()).toContain('empty.html');
+        expect(request.headers()['user-agent']).toBeTruthy();
+        expect(request.method()).toBe('GET');
+        expect(request.postData()).toBe(undefined);
+        expect(request.isNavigationRequest()).toBe(true);
+        expect(request.resourceType()).toBe('document');
+        expect(request.frame() === page.mainFrame()).toBe(true);
+        expect(request.frame().url()).toBe('about:blank');
+        request.continue();
+      });
+
+      const response = await page.goto(server.EMPTY_PAGE);
+      expect(response.ok()).toBe(true);
     });
   });
 };

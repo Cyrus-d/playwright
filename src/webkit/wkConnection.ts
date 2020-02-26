@@ -20,8 +20,6 @@ import * as platform from '../platform';
 import { ConnectionTransport } from '../transport';
 import { Protocol } from './protocol';
 
-const debugProtocol = platform.debug('pw:protocol');
-
 // WKPlaywright uses this special id to issue Browser.close command which we
 // should ignore.
 export const kBrowserCloseMessageId = -9999;
@@ -36,6 +34,7 @@ export class WKConnection {
   private readonly _transport: ConnectionTransport;
   private _closed = false;
   private _onDisconnect: () => void;
+  _debugFunction: (message: string) => void = platform.debug('pw:protocol');
 
   readonly browserSession: WKSession;
 
@@ -54,13 +53,13 @@ export class WKConnection {
   }
 
   rawSend(message: any) {
-    message = JSON.stringify(message);
-    debugProtocol('SEND ► ' + message);
-    this._transport.send(message);
+    const data = JSON.stringify(message);
+    this._debugFunction('SEND ► ' + (rewriteInjectedScriptEvaluationLog(message) || data));
+    this._transport.send(data);
   }
 
   private _dispatchMessage(message: string) {
-    debugProtocol('◀ RECV ' + message);
+    this._debugFunction('◀ RECV ' + message);
     const object = JSON.parse(message);
     if (object.id === kBrowserCloseMessageId)
       return;
@@ -166,7 +165,7 @@ export class WKSession extends platform.EventEmitter {
 export function createProtocolError(error: Error, method: string, object: { error: { message: string; data: any; }; }): Error {
   let message = `Protocol error (${method}): ${object.error.message}`;
   if ('data' in object.error)
-    message += ` ${object.error.data}`;
+    message += ` ${JSON.stringify(object.error.data)}`;
   return rewriteError(error, message);
 }
 
@@ -177,4 +176,11 @@ export function rewriteError(error: Error, message: string): Error {
 
 export function isSwappedOutError(e: Error) {
   return e.message.includes('Target was swapped out.');
+}
+
+function rewriteInjectedScriptEvaluationLog(message: any): string | undefined {
+  // Injected script is very long and clutters protocol logs.
+  // To increase development velocity, we skip replace it with short description in the log.
+  if (message.params && message.params.message && message.params.message.includes('Runtime.evaluate') && message.params.message.includes('src/injected/injected.ts'))
+    return `{"id":${message.id},"method":"${message.method}","params":{"message":[evaluate injected script],"targetId":"${message.params.targetId}"},"pageProxyId":${message.pageProxyId}}`;
 }

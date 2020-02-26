@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+/**
+ * @type {PageTestSuite}
+ */
 module.exports.describe = function({testRunner, expect, product, FFOX, CHROMIUM, WEBKIT}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -153,12 +156,13 @@ module.exports.describe = function({testRunner, expect, product, FFOX, CHROMIUM,
       });
       expect(Buffer.from(screenshot, 'base64')).toBeGolden('screenshot-sanity.png');
     });
-    it.skip(FFOX)('should work with a mobile viewport', async({newContext, server}) => {
-      const context = await newContext({viewport: { width: 320, height: 480, isMobile: true }});
+    it.skip(FFOX)('should work with a mobile viewport', async({browser, server}) => {
+      const context = await browser.newContext({viewport: { width: 320, height: 480, isMobile: true }});
       const page = await context.newPage();
       await page.goto(server.PREFIX + '/overflow.html');
       const screenshot = await page.screenshot();
       expect(screenshot).toBeGolden('screenshot-mobile.png');
+      await context.close();
     });
     it('should work for canvas', async({page, server}) => {
       await page.setViewportSize({width: 500, height: 500});
@@ -178,8 +182,7 @@ module.exports.describe = function({testRunner, expect, product, FFOX, CHROMIUM,
       const screenshot = await page.screenshot();
       expect(screenshot).toBeGolden('screenshot-webgl.png');
     });
-    // firefox is flaky
-    it.skip(FFOX)('should work while navigating', async({page, server}) => {
+    it('should work while navigating', async({page, server}) => {
       await page.setViewportSize({width: 500, height: 500});
       await page.goto(server.PREFIX + '/redirectloop1.html');
       for (let i = 0; i < 10; i++) {
@@ -295,6 +298,29 @@ module.exports.describe = function({testRunner, expect, product, FFOX, CHROMIUM,
       const screenshot = await elementHandle.screenshot();
       expect(screenshot).toBeGolden('screenshot-element-scrolled-into-view.png');
     });
+    it.skip(CHROMIUM)('should scroll 15000px into view', async({page, server}) => {
+      await page.setViewportSize({width: 500, height: 500});
+      await page.setContent(`
+        <div style="height: 14px">oooo</div>
+        <style>div.above {
+          border: 2px solid blue;
+          background: red;
+          height: 15000px;
+        }
+        div.to-screenshot {
+          border: 2px solid blue;
+          background: green;
+          width: 50px;
+          height: 50px;
+        }
+        </style>
+        <div class="above"></div>
+        <div class="to-screenshot"></div>
+      `);
+      const elementHandle = await page.$('div.to-screenshot');
+      const screenshot = await elementHandle.screenshot();
+      expect(screenshot).toBeGolden('screenshot-element-scrolled-into-view.png');
+    });
     it('should work with a rotated element', async({page, server}) => {
       await page.setViewportSize({width: 500, height: 500});
       await page.setContent(`<div style="position:absolute;
@@ -333,6 +359,77 @@ module.exports.describe = function({testRunner, expect, product, FFOX, CHROMIUM,
       const screenshot = await elementHandle.screenshot();
       expect(screenshot).toBeGolden('screenshot-element-fractional-offset.png');
     });
-  });
+    it('should take screenshots when default viewport is null', async({server, browser}) => {
+      const context = await browser.newContext({ viewport: null });
+      const page = await context.newPage();
+      await page.goto(server.PREFIX + '/grid.html');
+      const sizeBefore = await page.evaluate(() => ({ width: document.body.offsetWidth, height: document.body.offsetHeight }));
+      const screenshot = await page.screenshot();
+      expect(screenshot).toBeInstanceOf(Buffer);
 
+      const sizeAfter = await page.evaluate(() => ({ width: document.body.offsetWidth, height: document.body.offsetHeight }));
+      expect(sizeBefore.width).toBe(sizeAfter.width);
+      expect(sizeBefore.height).toBe(sizeAfter.height);
+      await context.close();
+    });
+    it('should take fullPage screenshots when default viewport is null', async({server, browser}) => {
+      const context = await browser.newContext({ viewport: null });
+      const page = await context.newPage();
+      await page.goto(server.PREFIX + '/grid.html');
+      const sizeBefore = await page.evaluate(() => ({ width: document.body.offsetWidth, height: document.body.offsetHeight }));
+      const screenshot = await page.screenshot({
+        fullPage: true
+      });
+      expect(screenshot).toBeInstanceOf(Buffer);
+
+      const sizeAfter = await page.evaluate(() => ({ width: document.body.offsetWidth, height: document.body.offsetHeight }));
+      expect(sizeBefore.width).toBe(sizeAfter.width);
+      expect(sizeBefore.height).toBe(sizeAfter.height);
+      await context.close();
+    });
+    it('should restore default viewport after fullPage screenshot', async({ browser }) => {
+      const context = await browser.newContext({ viewport: { width: 456, height: 789 } });
+      const page = await context.newPage();
+      expect(page.viewportSize().width).toBe(456);
+      expect(page.viewportSize().height).toBe(789);
+      expect(await page.evaluate('window.innerWidth')).toBe(456);
+      expect(await page.evaluate('window.innerHeight')).toBe(789);
+      const screenshot = await page.screenshot({ fullPage: true });
+      expect(screenshot).toBeInstanceOf(Buffer);
+      expect(page.viewportSize().width).toBe(456);
+      expect(page.viewportSize().height).toBe(789);
+      expect(await page.evaluate('window.innerWidth')).toBe(456);
+      expect(await page.evaluate('window.innerHeight')).toBe(789);
+      await context.close();
+    });
+    it('should take element screenshot when default viewport is null and restore back', async({server, browser}) => {
+      const context = await browser.newContext({viewport: null});
+      const page = await context.newPage({ viewport: null });
+      await page.setContent(`
+        <div style="height: 14px">oooo</div>
+        <style>
+        div.to-screenshot {
+          border: 1px solid blue;
+          width: 600px;
+          height: 600px;
+          margin-left: 50px;
+        }
+        ::-webkit-scrollbar{
+          display: none;
+        }
+        </style>
+        <div class="to-screenshot"></div>
+        <div class="to-screenshot"></div>
+        <div class="to-screenshot"></div>
+      `);
+      const sizeBefore = await page.evaluate(() => ({ width: document.body.offsetWidth, height: document.body.offsetHeight }));
+      const elementHandle = await page.$('div.to-screenshot');
+      const screenshot = await elementHandle.screenshot();
+      expect(screenshot).toBeInstanceOf(Buffer);
+      const sizeAfter = await page.evaluate(() => ({ width: document.body.offsetWidth, height: document.body.offsetHeight }));
+      expect(sizeBefore.width).toBe(sizeAfter.width);
+      expect(sizeBefore.height).toBe(sizeAfter.height);
+      await context.close();
+    });
+  });
 };

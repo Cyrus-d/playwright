@@ -20,6 +20,10 @@ export const Events = {
     Disconnected: 'disconnected'
   },
 
+  BrowserContext: {
+    Close: 'close'
+  },
+
   BrowserServer: {
     Close: 'close',
   },
@@ -42,16 +46,7 @@ export const Events = {
     FrameNavigated: 'framenavigated',
     Load: 'load',
     Popup: 'popup',
-    WebSocket: 'websocket',
     WorkerCreated: 'workercreated',
     WorkerDestroyed: 'workerdestroyed',
   },
-
-  WebSocket: {
-    Close: 'close',
-    Error: 'error',
-    MessageReceived: 'messageReceived',
-    MessageSent: 'messageSent',
-    Open: 'open',
-  }
 };

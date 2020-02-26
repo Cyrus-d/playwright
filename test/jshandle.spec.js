@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+/**
+ * @type {PageTestSuite}
+ */
 module.exports.describe = function({testRunner, expect, CHROMIUM, FFOX, WEBKIT}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -157,7 +160,7 @@ module.exports.describe = function({testRunner, expect, CHROMIUM, FFOX, WEBKIT})
       const aHandle = await page.evaluateHandle(() => document.querySelector('div').firstChild);
       const element = aHandle.asElement();
       expect(element).toBeTruthy();
-      expect(await page.evaluate(e => e.nodeType === HTMLElement.TEXT_NODE, element));
+      expect(await page.evaluate(e => e.nodeType === HTMLElement.TEXT_NODE, element)).toBeTruthy();
     });
     it('should work with nullified Node', async({page, server}) => {
       await page.setContent('<section>test</section>');

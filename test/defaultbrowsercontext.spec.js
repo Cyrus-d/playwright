@@ -17,6 +17,9 @@
 
 const { makeUserDataDir, removeUserDataDir } = require('./utils');
 
+/**
+ * @type {PageTestSuite}
+ */
 module.exports.describe = function ({ testRunner, expect, defaultBrowserOptions, playwright }) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -39,7 +42,7 @@ module.exports.describe = function ({ testRunner, expect, defaultBrowserOptions,
       await page.evaluate(() => {
         document.cookie = 'username=John Doe';
       });
-      expect(await page.browserContext().cookies()).toEqual([{
+      expect(await page.context().cookies()).toEqual([{
         name: 'username',
         value: 'John Doe',
         domain: 'localhost',
@@ -53,13 +56,13 @@ module.exports.describe = function ({ testRunner, expect, defaultBrowserOptions,
     });
     it('context.setCookies() should work', async({page, server}) => {
       await page.goto(server.EMPTY_PAGE);
-      await page.browserContext().setCookies([{
+      await page.context().setCookies([{
         url: server.EMPTY_PAGE,
         name: 'username',
         value: 'John Doe'
       }]);
       expect(await page.evaluate(() => document.cookie)).toBe('username=John Doe');
-      expect(await page.browserContext().cookies()).toEqual([{
+      expect(await page.context().cookies()).toEqual([{
         name: 'username',
         value: 'John Doe',
         domain: 'localhost',
@@ -73,7 +76,7 @@ module.exports.describe = function ({ testRunner, expect, defaultBrowserOptions,
     });
     it('context.clearCookies() should work', async({page, server}) => {
       await page.goto(server.EMPTY_PAGE);
-      await page.browserContext().setCookies([{
+      await page.context().setCookies([{
         url: server.EMPTY_PAGE,
         name: 'cookie1',
         value: '1'
@@ -83,7 +86,7 @@ module.exports.describe = function ({ testRunner, expect, defaultBrowserOptions,
         value: '2'
       }]);
       expect(await page.evaluate('document.cookie')).toBe('cookie1=1; cookie2=2');
-      await page.browserContext().clearCookies();
+      await page.context().clearCookies();
       expect(await page.evaluate('document.cookie')).toBe('');
     });
   });

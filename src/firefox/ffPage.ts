@@ -20,7 +20,7 @@ import { helper, RegisteredListener, debugError, assert } from '../helper';
 import * as dom from '../dom';
 import { FFSession } from './ffConnection';
 import { FFExecutionContext } from './ffExecutionContext';
-import { Page, PageDelegate, Coverage, Worker } from '../page';
+import { Page, PageDelegate, Worker } from '../page';
 import { FFNetworkManager } from './ffNetworkManager';
 import { Events } from '../events';
 import * as dialog from '../dialog';
@@ -73,30 +73,18 @@ export class FFPage implements PageDelegate {
       helper.addEventListener(this._session, 'Page.workerCreated', this._onWorkerCreated.bind(this)),
       helper.addEventListener(this._session, 'Page.workerDestroyed', this._onWorkerDestroyed.bind(this)),
       helper.addEventListener(this._session, 'Page.dispatchMessageFromWorker', this._onDispatchMessageFromWorker.bind(this)),
+      helper.addEventListener(this._session, 'Page.crashed', this._onCrashed.bind(this)),
     ];
   }
 
   async _initialize() {
-    const promises: Promise<any>[] = [
-      this._session.send('Runtime.enable').then(() => this._ensureIsolatedWorld(UTILITY_WORLD_NAME)),
-      this._session.send('Network.enable'),
-      this._session.send('Page.enable'),
-    ];
-    const options = this._page.browserContext()._options;
-    if (options.viewport)
-      promises.push(this._updateViewport());
-    if (options.bypassCSP)
-      promises.push(this._session.send('Page.setBypassCSP', { enabled: true }));
-    if (options.javaScriptEnabled === false)
-      promises.push(this._session.send('Page.setJavascriptEnabled', { enabled: false }));
-    await Promise.all(promises);
-  }
-
-  async _ensureIsolatedWorld(name: string) {
-    await this._session.send('Page.addScriptToEvaluateOnNewDocument', {
-      script: '',
-      worldName: name,
-    });
+    await Promise.all([
+      this._session.send('Page.addScriptToEvaluateOnNewDocument', {
+        script: '',
+        worldName: UTILITY_WORLD_NAME,
+      }),
+      new Promise(f => this._session.once('Page.ready', f)),
+    ]);
   }
 
   _onExecutionContextCreated(payload: Protocol.Runtime.executionContextCreatedPayload) {
@@ -134,8 +122,8 @@ export class FFPage implements PageDelegate {
 
   _onNavigationAborted(params: Protocol.Page.navigationAbortedPayload) {
     const frame = this._page._frameManager.frame(params.frameId)!;
-    for (const watcher of this._page._frameManager._lifecycleWatchers)
-      watcher._onAbortedNewDocumentNavigation(frame, params.navigationId, params.errorText);
+    for (const watcher of frame._documentWatchers)
+      watcher(params.navigationId, new Error(params.errorText));
   }
 
   _onNavigationCommitted(params: Protocol.Page.navigationCommittedPayload) {
@@ -242,6 +230,10 @@ export class FFPage implements PageDelegate {
     worker.session.dispatchMessage(JSON.parse(event.message));
   }
 
+  async _onCrashed(event: Protocol.Page.crashedPayload) {
+    this._page._didCrash();
+  }
+
   async exposeBinding(name: string, bindingFunction: string): Promise<void> {
     await this._session.send('Page.addBinding', {name: name});
     await this._session.send('Page.addScriptToEvaluateOnNewDocument', {script: bindingFunction});
@@ -256,7 +248,7 @@ export class FFPage implements PageDelegate {
 
   async navigateFrame(frame: frames.Frame, url: string, referer: string | undefined): Promise<frames.GotoResult> {
     const response = await this._session.send('Page.navigate', { url, referer, frameId: frame._id });
-    return { newDocumentId: response.navigationId || undefined, isSameDocument: !response.navigationId };
+    return { newDocumentId: response.navigationId || undefined };
   }
 
   async setExtraHTTPHeaders(headers: network.Headers): Promise<void> {
@@ -268,22 +260,10 @@ export class FFPage implements PageDelegate {
 
   async setViewportSize(viewportSize: types.Size): Promise<void> {
     assert(this._page._state.viewportSize === viewportSize);
-    await this._updateViewport();
-  }
-
-  async _updateViewport() {
-    let viewport = this._page.browserContext()._options.viewport || { width: 0, height: 0 };
-    const viewportSize = this._page._state.viewportSize;
-    if (viewportSize)
-      viewport = { ...viewport, ...viewportSize };
-    await this._session.send('Page.setViewport', {
-      viewport: {
-        width: viewport.width,
-        height: viewport.height,
-        isMobile: !!viewport.isMobile,
-        deviceScaleFactor: viewport.deviceScaleFactor || 1,
-        hasTouch: !!viewport.isMobile,
-        isLandscape: viewport.width > viewport.height
+    await this._session.send('Page.setViewportSize', {
+      viewportSize: {
+        width: viewportSize.width,
+        height: viewportSize.height,
       },
     });
   }
@@ -373,7 +353,7 @@ export class FFPage implements PageDelegate {
   }
 
   async resetViewport(): Promise<void> {
-    await this._session.send('Page.setViewport', { viewport: null });
+    await this._session.send('Page.setViewportSize', { viewportSize: null });
   }
 
   async getContentFrame(handle: dom.ElementHandle): Promise<frames.Frame | null> {
@@ -417,6 +397,14 @@ export class FFPage implements PageDelegate {
     return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
   }
 
+  async scrollRectIntoViewIfNeeded(handle: dom.ElementHandle, rect?: types.Rect): Promise<void> {
+    await this._session.send('Page.scrollIntoViewIfNeeded', {
+      frameId: handle._context.frame._id,
+      objectId: toRemoteObject(handle).objectId!,
+      rect,
+    });
+  }
+
   async getContentQuads(handle: dom.ElementHandle): Promise<types.Quad[] | null> {
     const result = await this._session.send('Page.getContentQuads', {
       frameId: handle._context.frame._id,
@@ -441,15 +429,13 @@ export class FFPage implements PageDelegate {
       objectId: toRemoteObject(handle).objectId!,
       executionContextId: (to._delegate as FFExecutionContext)._executionContextId
     });
+    if (!result.remoteObject)
+      throw new Error('Unable to adopt element handle from a different document');
     return to._createHandle(result.remoteObject) as dom.ElementHandle<T>;
   }
 
   async getAccessibilityTree(needle?: dom.ElementHandle) {
     return getAccessibilityTree(this._session, needle);
-  }
-
-  coverage(): Coverage | undefined {
-    return undefined;
   }
 
   async getFrameElement(frame: frames.Frame): Promise<dom.ElementHandle> {

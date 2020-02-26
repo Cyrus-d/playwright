@@ -23,7 +23,7 @@ import * as network from '../network';
 import { CRSession, CRConnection } from './crConnection';
 import { EVALUATION_SCRIPT_URL, CRExecutionContext } from './crExecutionContext';
 import { CRNetworkManager } from './crNetworkManager';
-import { Page, Coverage, Worker } from '../page';
+import { Page, Worker } from '../page';
 import { Protocol } from './protocol';
 import { Events } from '../events';
 import { toConsoleMessageLocation, exceptionToError, releaseObject } from './crProtocolHelper';
@@ -99,8 +99,9 @@ export class CRPage implements PageDelegate {
       this._client.send('Runtime.enable', {}).then(() => this._ensureIsolatedWorld(UTILITY_WORLD_NAME)),
       this._networkManager.initialize(),
       this._client.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }),
+      this._client.send('Emulation.setFocusEmulationEnabled', { enabled: true }),
     ];
-    const options = this._page.browserContext()._options;
+    const options = this._page.context()._options;
     if (options.bypassCSP)
       promises.push(this._client.send('Page.setBypassCSP', { enabled: true }));
     if (options.ignoreHTTPSErrors)
@@ -109,8 +110,8 @@ export class CRPage implements PageDelegate {
       promises.push(this._updateViewport(true /* updateTouch */));
     if (options.javaScriptEnabled === false)
       promises.push(this._client.send('Emulation.setScriptExecutionDisabled', { value: true }));
-    if (options.userAgent)
-      this._networkManager.setUserAgent(options.userAgent);
+    if (options.userAgent || options.locale)
+      promises.push(this._client.send('Emulation.setUserAgentOverride', { userAgent: options.userAgent || '', acceptLanguage: options.locale }));
     if (options.timezoneId)
       promises.push(emulateTimezone(this._client, options.timezoneId));
     if (options.geolocation)
@@ -128,7 +129,7 @@ export class CRPage implements PageDelegate {
     const response = await this._client.send('Page.navigate', { url, referrer, frameId: frame._id });
     if (response.errorText)
       throw new Error(`${response.errorText} at ${url}`);
-    return { newDocumentId: response.loaderId, isSameDocument: !response.loaderId };
+    return { newDocumentId: response.loaderId };
   }
 
   _onLifecycleEvent(event: Protocol.Page.lifecycleEventPayload) {
@@ -323,7 +324,7 @@ export class CRPage implements PageDelegate {
   }
 
   async _updateViewport(updateTouch: boolean): Promise<void> {
-    let viewport = this._page.browserContext()._options.viewport || { width: 0, height: 0 };
+    let viewport = this._page.context()._options.viewport || { width: 0, height: 0 };
     const viewportSize = this._page._state.viewportSize;
     if (viewportSize)
       viewport = { ...viewport, ...viewportSize };
@@ -484,6 +485,17 @@ export class CRPage implements PageDelegate {
     return {x, y, width, height};
   }
 
+  async scrollRectIntoViewIfNeeded(handle: dom.ElementHandle, rect?: types.Rect): Promise<void> {
+    await this._client.send('DOM.scrollIntoViewIfNeeded', {
+      objectId: toRemoteObject(handle).objectId,
+      rect,
+    }).catch(e => {
+      if (e instanceof Error && e.message.includes('Node does not have a layout object'))
+        e.message = 'Node is either not visible or not an HTMLElement';
+      throw e;
+    });
+  }
+
   async getContentQuads(handle: dom.ElementHandle): Promise<types.Quad[] | null> {
     const result = await this._client.send('DOM.getContentQuads', {
       objectId: toRemoteObject(handle).objectId
@@ -532,7 +544,7 @@ export class CRPage implements PageDelegate {
     return this._pdf.generate(options);
   }
 
-  coverage(): Coverage | undefined {
+  coverage(): CRCoverage {
     return this._coverage;
   }
 

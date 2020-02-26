@@ -25,6 +25,9 @@ const statAsync = util.promisify(fs.stat);
 
 const TMP_FOLDER = path.join(os.tmpdir(), 'pw_tmp_folder-');
 
+/**
+ * @type {TestSuite}
+ */
 module.exports.describe = function({testRunner, expect, defaultBrowserOptions, playwright, WIN}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -54,11 +57,12 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
   describe('Browser target events', function() {
     it('should work', async({server}) => {
       const browser = await playwright.launch(defaultBrowserOptions);
+      const context = await browser.newContext();
       const events = [];
-      browser.on('targetcreated', () => events.push('CREATED'));
-      browser.on('targetchanged', () => events.push('CHANGED'));
-      browser.on('targetdestroyed', () => events.push('DESTROYED'));
-      const page = await browser.newPage();
+      context.on('targetcreated', target => events.push('CREATED'));
+      context.on('targetchanged', target => events.push('CHANGED'));
+      context.on('targetdestroyed', target => events.push('DESTROYED'));
+      const page = await context.newPage();
       await page.goto(server.EMPTY_PAGE);
       await page.close();
       expect(events).toEqual(['CREATED', 'CHANGED', 'DESTROYED']);

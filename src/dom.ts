@@ -25,6 +25,15 @@ import { Page } from './page';
 import * as platform from './platform';
 import { Selectors } from './selectors';
 
+export type PointerActionOptions = {
+  modifiers?: input.Modifier[];
+  offset?: types.Point;
+};
+
+export type ClickOptions = PointerActionOptions & input.MouseClickOptions;
+
+export type MultiClickOptions = PointerActionOptions & input.MouseMultiClickOptions;
+
 export class FrameExecutionContext extends js.ExecutionContext {
   readonly frame: frames.Frame;
 
@@ -135,16 +144,16 @@ export class ElementHandle<T extends Node = Node> extends js.JSHandle<T> {
     return this;
   }
 
-  _evaluateInUtility: types.EvaluateOn<T> = async (pageFunction, ...args) => {
+  _evaluateInUtility: types.EvaluateWithInjected<T> = async (pageFunction, ...args) => {
     const utility = await this._context.frame._utilityContext();
-    return utility.evaluate(pageFunction as any, this, ...args);
+    return utility.evaluate(pageFunction as any, await utility._injected(), this, ...args);
   }
 
   async ownerFrame(): Promise<frames.Frame | null> {
     const frameId = await this._page._delegate.getOwnerFrame(this);
     if (!frameId)
       return null;
-    const pages = this._page.browserContext()._existingPages();
+    const pages = this._page.context()._existingPages();
     for (const page of pages) {
       const frame = page._frameManager.frame(frameId);
       if (frame)
@@ -154,64 +163,18 @@ export class ElementHandle<T extends Node = Node> extends js.JSHandle<T> {
   }
 
   async contentFrame(): Promise<frames.Frame | null> {
-    const isFrameElement = await this._evaluateInUtility(node => node && (node.nodeName === 'IFRAME' || node.nodeName === 'FRAME'));
+    const isFrameElement = await this._evaluateInUtility((injected, node) => node && (node.nodeName === 'IFRAME' || node.nodeName === 'FRAME'));
     if (!isFrameElement)
       return null;
     return this._page._delegate.getContentFrame(this);
   }
 
-  async scrollIntoViewIfNeeded() {
-    const error = await this._evaluateInUtility(async (node: Node, pageJavascriptEnabled: boolean) => {
-      if (!node.isConnected)
-        return 'Node is detached from document';
-      if (node.nodeType !== Node.ELEMENT_NODE)
-        return 'Node is not of type HTMLElement';
-      const element = node as Element;
-      // force-scroll if page's javascript is disabled.
-      if (!pageJavascriptEnabled) {
-        // @ts-ignore because only Chromium still supports 'instant'
-        element.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
-        return false;
-      }
-      const visibleRatio = await new Promise(resolve => {
-        const observer = new IntersectionObserver(entries => {
-          resolve(entries[0].intersectionRatio);
-          observer.disconnect();
-        });
-        observer.observe(element);
-        // Firefox doesn't call IntersectionObserver callback unless
-        // there are rafs.
-        requestAnimationFrame(() => {});
-      });
-      if (visibleRatio !== 1.0) {
-        // @ts-ignore because only Chromium still supports 'instant'
-        element.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
-      }
-      return false;
-    }, !!this._page.browserContext()._options.javaScriptEnabled);
-    if (error)
-      throw new Error(error);
+  async _scrollRectIntoViewIfNeeded(rect?: types.Rect): Promise<void> {
+    await this._page._delegate.scrollRectIntoViewIfNeeded(this, rect);
   }
 
-  private async _ensurePointerActionPoint(relativePoint?: types.Point): Promise<types.Point> {
-    await this.scrollIntoViewIfNeeded();
-    if (!relativePoint)
-      return this._clickablePoint();
-    let r = await this._viewportPointAndScroll(relativePoint);
-    if (r.scrollX || r.scrollY) {
-      const error = await this._evaluateInUtility((element, scrollX, scrollY) => {
-        if (!element.ownerDocument || !element.ownerDocument.defaultView)
-          return 'Node does not have a containing window';
-        element.ownerDocument.defaultView.scrollBy(scrollX, scrollY);
-        return false;
-      }, r.scrollX, r.scrollY);
-      if (error)
-        throw new Error(error);
-      r = await this._viewportPointAndScroll(relativePoint);
-      if (r.scrollX || r.scrollY)
-        throw new Error('Failed to scroll relative point into viewport');
-    }
-    return r.point;
+  async scrollIntoViewIfNeeded() {
+    await this._scrollRectIntoViewIfNeeded();
   }
 
   private async _clickablePoint(): Promise<types.Point> {
@@ -253,43 +216,35 @@ export class ElementHandle<T extends Node = Node> extends js.JSHandle<T> {
     return result;
   }
 
-  private async _viewportPointAndScroll(relativePoint: types.Point): Promise<{point: types.Point, scrollX: number, scrollY: number}> {
+  private async _offsetPoint(offset: types.Point): Promise<types.Point> {
     const [box, border] = await Promise.all([
       this.boundingBox(),
-      this._evaluateInUtility((node: Node) => {
-        if (node.nodeType !== Node.ELEMENT_NODE || !node.ownerDocument || !node.ownerDocument.defaultView)
-          return { x: 0, y: 0 };
-        const style = node.ownerDocument.defaultView.getComputedStyle(node as Element);
-        return { x: parseInt(style.borderLeftWidth || '', 10), y: parseInt(style.borderTopWidth || '', 10) };
-      }).catch(debugError),
+      this._evaluateInUtility((injected, node) => injected.getElementBorderWidth(node)).catch(debugError),
     ]);
-    const point = { x: relativePoint.x, y: relativePoint.y };
+    const point = { x: offset.x, y: offset.y };
     if (box) {
       point.x += box.x;
       point.y += box.y;
     }
     if (border) {
       // Make point relative to the padding box to align with offsetX/offsetY.
-      point.x += border.x;
-      point.y += border.y;
+      point.x += border.left;
+      point.y += border.top;
     }
-    const metrics = await this._page._delegate.layoutViewport();
-    // Give 20 extra pixels to avoid any issues on viewport edge.
-    let scrollX = 0;
-    if (point.x < 20)
-      scrollX = point.x - 20;
-    if (point.x > metrics.width - 20)
-      scrollX = point.x - metrics.width + 20;
-    let scrollY = 0;
-    if (point.y < 20)
-      scrollY = point.y - 20;
-    if (point.y > metrics.height - 20)
-      scrollY = point.y - metrics.height + 20;
-    return { point, scrollX, scrollY };
+    return point;
   }
 
-  async _performPointerAction(action: (point: types.Point) => Promise<void>, options?: input.PointerActionOptions): Promise<void> {
-    const point = await this._ensurePointerActionPoint(options ? options.relativePoint : undefined);
+  async _performPointerAction(action: (point: types.Point) => Promise<void>, options?: PointerActionOptions & types.WaitForOptions): Promise<void> {
+    const { waitFor = true } = (options || {});
+    if (!helper.isBoolean(waitFor))
+      throw new Error('waitFor option should be a boolean, got "' + (typeof waitFor) + '"');
+    if (waitFor)
+      await this._waitForStablePosition(options);
+    const offset = options ? options.offset : undefined;
+    await this._scrollRectIntoViewIfNeeded(offset ? { x: offset.x, y: offset.y, width: 0, height: 0 } : undefined);
+    const point = offset ? await this._offsetPoint(offset) : await this._clickablePoint();
+    if (waitFor)
+      await this._waitForHitTargetAt(point, options);
     let restoreModifiers: input.Modifier[] | undefined;
     if (options && options.modifiers)
       restoreModifiers = await this._page.keyboard._ensureModifiers(options.modifiers);
@@ -298,19 +253,19 @@ export class ElementHandle<T extends Node = Node> extends js.JSHandle<T> {
       await this._page.keyboard._ensureModifiers(restoreModifiers);
   }
 
-  hover(options?: input.PointerActionOptions): Promise<void> {
+  hover(options?: PointerActionOptions & types.WaitForOptions): Promise<void> {
     return this._performPointerAction(point => this._page.mouse.move(point.x, point.y), options);
   }
 
-  click(options?: input.ClickOptions): Promise<void> {
+  click(options?: ClickOptions & types.WaitForOptions): Promise<void> {
     return this._performPointerAction(point => this._page.mouse.click(point.x, point.y, options), options);
   }
 
-  dblclick(options?: input.MultiClickOptions): Promise<void> {
+  dblclick(options?: MultiClickOptions & types.WaitForOptions): Promise<void> {
     return this._performPointerAction(point => this._page.mouse.dblclick(point.x, point.y, options), options);
   }
 
-  tripleclick(options?: input.MultiClickOptions): Promise<void> {
+  tripleclick(options?: MultiClickOptions & types.WaitForOptions): Promise<void> {
     return this._performPointerAction(point => this._page.mouse.tripleclick(point.x, point.y, options), options);
   }
 
@@ -326,92 +281,12 @@ export class ElementHandle<T extends Node = Node> extends js.JSHandle<T> {
       if (option.index !== undefined)
         assert(helper.isNumber(option.index), 'Indices must be numbers. Found index "' + option.index + '" of type "' + (typeof option.index) + '"');
     }
-    return this._evaluateInUtility((node: Node, ...optionsToSelect: (Node | types.SelectOption)[]) => {
-      if (node.nodeName.toLowerCase() !== 'select')
-        throw new Error('Element is not a <select> element.');
-      const element = node as HTMLSelectElement;
-
-      const options = Array.from(element.options);
-      element.value = undefined as any;
-      for (let index = 0; index < options.length; index++) {
-        const option = options[index];
-        option.selected = optionsToSelect.some(optionToSelect => {
-          if (optionToSelect instanceof Node)
-            return option === optionToSelect;
-          let matches = true;
-          if (optionToSelect.value !== undefined)
-            matches = matches && optionToSelect.value === option.value;
-          if (optionToSelect.label !== undefined)
-            matches = matches && optionToSelect.label === option.label;
-          if (optionToSelect.index !== undefined)
-            matches = matches && optionToSelect.index === index;
-          return matches;
-        });
-        if (option.selected && !element.multiple)
-          break;
-      }
-      element.dispatchEvent(new Event('input', { 'bubbles': true }));
-      element.dispatchEvent(new Event('change', { 'bubbles': true }));
-      return options.filter(option => option.selected).map(option => option.value);
-    }, ...options);
+    return this._evaluateInUtility((injected, node, ...optionsToSelect) => injected.selectOptions(node, optionsToSelect), ...options);
   }
 
   async fill(value: string): Promise<void> {
     assert(helper.isString(value), 'Value must be string. Found value "' + value + '" of type "' + (typeof value) + '"');
-    const error = await this._evaluateInUtility((node: Node, value: string) => {
-      if (node.nodeType !== Node.ELEMENT_NODE)
-        return 'Node is not of type HTMLElement';
-      const element = node as HTMLElement;
-      if (!element.isConnected)
-        return 'Element is not attached to the DOM';
-      if (!element.ownerDocument || !element.ownerDocument.defaultView)
-        return 'Element does not belong to a window';
-
-      const style = element.ownerDocument.defaultView.getComputedStyle(element);
-      if (!style || style.visibility === 'hidden')
-        return 'Element is hidden';
-      if (!element.offsetParent && element.tagName !== 'BODY')
-        return 'Element is not visible';
-      if (element.nodeName.toLowerCase() === 'input') {
-        const input = element as HTMLInputElement;
-        const type = input.getAttribute('type') || '';
-        const kTextInputTypes = new Set(['', 'email', 'number', 'password', 'search', 'tel', 'text', 'url']);
-        if (!kTextInputTypes.has(type.toLowerCase()))
-          return 'Cannot fill input of type "' + type + '".';
-        if (type.toLowerCase() === 'number') {
-          value = value.trim();
-          if (!value || isNaN(Number(value)))
-            return 'Cannot type text into input[type=number].';
-        }
-        if (input.disabled)
-          return 'Cannot fill a disabled input.';
-        if (input.readOnly)
-          return 'Cannot fill a readonly input.';
-        input.select();
-        input.focus();
-      } else if (element.nodeName.toLowerCase() === 'textarea') {
-        const textarea = element as HTMLTextAreaElement;
-        if (textarea.disabled)
-          return 'Cannot fill a disabled textarea.';
-        if (textarea.readOnly)
-          return 'Cannot fill a readonly textarea.';
-        textarea.selectionStart = 0;
-        textarea.selectionEnd = textarea.value.length;
-        textarea.focus();
-      } else if (element.isContentEditable) {
-        const range = element.ownerDocument.createRange();
-        range.selectNodeContents(element);
-        const selection = element.ownerDocument.defaultView.getSelection();
-        if (!selection)
-          return 'Element belongs to invisible iframe.';
-        selection.removeAllRanges();
-        selection.addRange(range);
-        element.focus();
-      } else {
-        return 'Element is not an <input>, <textarea> or [contenteditable] element.';
-      }
-      return false;
-    }, value);
+    const error = await this._evaluateInUtility((injected, node, value) => injected.fill(node, value), value);
     if (error)
       throw new Error(error);
     if (value)
@@ -421,7 +296,7 @@ export class ElementHandle<T extends Node = Node> extends js.JSHandle<T> {
   }
 
   async setInputFiles(...files: (string | types.FilePayload)[]) {
-    const multiple = await this._evaluateInUtility((node: Node) => {
+    const multiple = await this._evaluateInUtility((injected: Injected, node: Node) => {
       if (node.nodeType !== Node.ELEMENT_NODE || (node as Element).tagName !== 'INPUT')
         throw new Error('Node is not an HTMLInputElement');
       const input = node as HTMLInputElement;
@@ -432,7 +307,7 @@ export class ElementHandle<T extends Node = Node> extends js.JSHandle<T> {
       if (typeof item === 'string') {
         const file: types.FilePayload = {
           name: platform.basename(item),
-          type: 'application/octet-stream',
+          type: platform.getMimeType(item),
           data: await platform.readFileAsync(item, 'base64')
         };
         return file;
@@ -443,7 +318,7 @@ export class ElementHandle<T extends Node = Node> extends js.JSHandle<T> {
   }
 
   async focus() {
-    const errorMessage = await this._evaluateInUtility((element: Node) => {
+    const errorMessage = await this._evaluateInUtility((injected: Injected, element: Node) => {
       if (!(element as any)['focus'])
         return 'Node is not an HTML or SVG element.';
       (element as HTMLElement|SVGElement).focus();
@@ -458,48 +333,24 @@ export class ElementHandle<T extends Node = Node> extends js.JSHandle<T> {
     await this._page.keyboard.type(text, options);
   }
 
-  async press(key: string, options: { delay?: number; text?: string; } | undefined) {
+  async press(key: string, options?: { delay?: number, text?: string }) {
     await this.focus();
     await this._page.keyboard.press(key, options);
   }
-  async check() {
-    await this._setChecked(true);
+
+  async check(options?: types.WaitForOptions) {
+    await this._setChecked(true, options);
   }
 
-  async uncheck() {
-    await this._setChecked(false);
+  async uncheck(options?: types.WaitForOptions) {
+    await this._setChecked(false, options);
   }
 
-  private async _setChecked(state: boolean) {
-    const isCheckboxChecked = async (): Promise<boolean> => {
-      return this._evaluateInUtility((node: Node) => {
-        if (node.nodeType !== Node.ELEMENT_NODE)
-          throw new Error('Not a checkbox or radio button');
-
-        let element: Element | undefined = node as Element;
-        if (element.getAttribute('role') === 'checkbox')
-          return element.getAttribute('aria-checked') === 'true';
-
-        if (element.nodeName === 'LABEL') {
-          const forId = element.getAttribute('for');
-          if (forId && element.ownerDocument)
-            element = element.ownerDocument.querySelector(`input[id="${forId}"]`) || undefined;
-          else
-            element = element.querySelector('input[type=checkbox],input[type=radio]') || undefined;
-        }
-        if (element && element.nodeName === 'INPUT') {
-          const type = element.getAttribute('type');
-          if (type && (type.toLowerCase() === 'checkbox' || type.toLowerCase() === 'radio'))
-            return (element as HTMLInputElement).checked;
-        }
-        throw new Error('Not a checkbox');
-      });
-    };
-
-    if (await isCheckboxChecked() === state)
+  private async _setChecked(state: boolean, options?: types.WaitForOptions) {
+    if (await this._evaluateInUtility((injected, node) => injected.isCheckboxChecked(node)) === state)
       return;
-    await this.click();
-    if (await isCheckboxChecked() !== state)
+    await this.click(options);
+    if (await this._evaluateInUtility((injected, node) => injected.isCheckboxChecked(node)) !== state)
       throw new Error('Unable to click checkbox');
   }
 
@@ -535,23 +386,27 @@ export class ElementHandle<T extends Node = Node> extends js.JSHandle<T> {
     return result;
   }
 
-  visibleRatio(): Promise<number> {
-    return this._evaluateInUtility(async (node: Node) => {
-      if (node.nodeType !== Node.ELEMENT_NODE)
-        throw new Error('Node is not of type HTMLElement');
-      const element = node as Element;
-      const visibleRatio = await new Promise<number>(resolve => {
-        const observer = new IntersectionObserver(entries => {
-          resolve(entries[0].intersectionRatio);
-          observer.disconnect();
-        });
-        observer.observe(element);
-        // Firefox doesn't call IntersectionObserver callback unless
-        // there are rafs.
-        requestAnimationFrame(() => {});
-      });
-      return visibleRatio;
-    });
+  async _waitForStablePosition(options: types.TimeoutOptions = {}): Promise<void> {
+    const stablePromise = this._evaluateInUtility((injected, node, timeout) => {
+      return injected.waitForStablePosition(node, timeout);
+    }, options.timeout || 0);
+    await helper.waitWithTimeout(stablePromise, 'element to stop moving', options.timeout || 0);
+  }
+
+  async _waitForHitTargetAt(point: types.Point, options: types.TimeoutOptions = {}): Promise<void> {
+    const frame = await this.ownerFrame();
+    if (frame && frame.parentFrame()) {
+      const element = await frame.frameElement();
+      const box = await element.boundingBox();
+      if (!box)
+        throw new Error('Element is not attached to the DOM');
+      // Translate from viewport coordinates to frame coordinates.
+      point = { x: point.x - box.x, y: point.y - box.y };
+    }
+    const hitTargetPromise = this._evaluateInUtility((injected, node, timeout, point) => {
+      return injected.waitForHitTargetAt(node, timeout, point);
+    }, options.timeout || 0, point);
+    await helper.waitWithTimeout(hitTargetPromise, 'element to receive mouse events', options.timeout || 0);
   }
 }
 
@@ -570,61 +425,55 @@ function normalizeSelector(selector: string): string {
 
 export type Task = (context: FrameExecutionContext) => Promise<js.JSHandle>;
 
-export function waitForFunctionTask(selector: string | undefined, pageFunction: Function | string, options: types.WaitForFunctionOptions, ...args: any[]) {
-  const { polling = 'raf' } = options;
+function assertPolling(polling: types.Polling) {
   if (helper.isString(polling))
     assert(polling === 'raf' || polling === 'mutation', 'Unknown polling option: ' + polling);
   else if (helper.isNumber(polling))
     assert(polling > 0, 'Cannot poll with non-positive interval: ' + polling);
   else
     throw new Error('Unknown polling options: ' + polling);
+}
+
+export function waitForFunctionTask(selector: string | undefined, pageFunction: Function | string, options: types.WaitForFunctionOptions, ...args: any[]): Task {
+  const { polling = 'raf' } = options;
+  assertPolling(polling);
   const predicateBody = helper.isString(pageFunction) ? 'return (' + pageFunction + ')' : 'return (' + pageFunction + ')(...args)';
   if (selector !== undefined)
     selector = normalizeSelector(selector);
 
   return async (context: FrameExecutionContext) => context.evaluateHandle((injected: Injected, selector: string | undefined, predicateBody: string, polling: types.Polling, timeout: number, ...args) => {
     const innerPredicate = new Function('...args', predicateBody);
-    if (polling === 'raf')
-      return injected.pollRaf(selector, predicate, timeout);
-    if (polling === 'mutation')
-      return injected.pollMutation(selector, predicate, timeout);
-    return injected.pollInterval(selector, polling, predicate, timeout);
-
-    function predicate(element: Element | undefined): any {
+    return injected.poll(polling, selector, timeout, (element: Element | undefined): any => {
       if (selector === undefined)
         return innerPredicate(...args);
       return innerPredicate(element, ...args);
-    }
+    });
   }, await context._injected(), selector, predicateBody, polling, options.timeout || 0, ...args);
 }
 
 export function waitForSelectorTask(selector: string, visibility: types.Visibility, timeout: number): Task {
-  return async (context: FrameExecutionContext) => {
-    selector = normalizeSelector(selector);
-    return context.evaluateHandle((injected: Injected, selector: string, visibility: types.Visibility, timeout: number) => {
-      if (visibility !== 'any')
-        return injected.pollRaf(selector, predicate, timeout);
-      return injected.pollMutation(selector, predicate, timeout);
-
-      function predicate(element: Element | undefined): Element | boolean {
-        if (!element)
-          return visibility === 'hidden';
-        if (visibility === 'any')
-          return element;
-        return injected.isVisible(element) === (visibility === 'visible') ? element : false;
-      }
-    }, await context._injected(), selector, visibility, timeout);
-  };
+  selector = normalizeSelector(selector);
+  return async (context: FrameExecutionContext) => context.evaluateHandle((injected: Injected, selector: string, visibility: types.Visibility, timeout: number) => {
+    const polling = visibility === 'any' ? 'mutation' : 'raf';
+    return injected.poll(polling, selector, timeout, (element: Element | undefined): Element | boolean => {
+      if (!element)
+        return visibility === 'hidden';
+      if (visibility === 'any')
+        return element;
+      return injected.isVisible(element) === (visibility === 'visible') ? element : false;
+    });
+  }, await context._injected(), selector, visibility, timeout);
 }
 
 export const setFileInputFunction = async (element: HTMLInputElement, payloads: types.FilePayload[]) => {
   const files = await Promise.all(payloads.map(async (file: types.FilePayload) => {
     const result = await fetch(`data:${file.type};base64,${file.data}`);
-    return new File([await result.blob()], file.name);
+    return new File([await result.blob()], file.name, {type: file.type});
   }));
   const dt = new DataTransfer();
   for (const file of files)
     dt.items.add(file);
   element.files = dt.files;
   element.dispatchEvent(new Event('input', { 'bubbles': true }));
+  element.dispatchEvent(new Event('change', { 'bubbles': true }));
 };

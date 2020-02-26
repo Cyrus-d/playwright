@@ -19,10 +19,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as util from 'util';
-import { BrowserFetcher, BrowserFetcherOptions } from '../server/browserFetcher';
+import { BrowserFetcher, OnProgressCallback, BrowserFetcherOptions } from '../server/browserFetcher';
 import { DeviceDescriptors } from '../deviceDescriptors';
 import * as types from '../types';
-import { assert } from '../helper';
+import { assert, helper } from '../helper';
 import { CRBrowser } from '../chromium/crBrowser';
 import * as platform from '../platform';
 import { TimeoutError } from '../errors';
@@ -50,6 +50,8 @@ export class Chromium implements BrowserType {
   }
 
   async launch(options?: LaunchOptions & { slowMo?: number }): Promise<CRBrowser> {
+    if (options && (options as any).userDataDir)
+      throw new Error('userDataDir option is not supported in `browserType.launch`. Use `browserType.launchPersistent` instead');
     const { browserServer, transport } = await this._launchServer(options, 'local');
     const browser = await CRBrowser.connect(transport!, options && options.slowMo);
     // Hack: for typical launch scenario, ensure that close waits for actual process termination.
@@ -63,8 +65,10 @@ export class Chromium implements BrowserType {
   }
 
   async launchPersistent(userDataDir: string, options?: LaunchOptions): Promise<BrowserContext> {
+    const { timeout = 30000 } = options || {};
     const { browserServer, transport } = await this._launchServer(options, 'persistent', userDataDir);
     const browser = await CRBrowser.connect(transport!);
+    await helper.waitWithTimeout(browser._defaultContext.waitForTarget(t => t.type() === 'page'), 'first page', timeout);
     // Hack: for typical launch scenario, ensure that close waits for actual process termination.
     const browserContext = browser._defaultContext;
     browserContext.close = () => browserServer.close();
@@ -187,11 +191,22 @@ export class Chromium implements BrowserType {
           '--mute-audio'
       );
     }
+    if (launchType !== 'persistent')
+      chromeArguments.push('--no-startup-window');
     chromeArguments.push(...args);
     if (args.every(arg => arg.startsWith('-')))
       chromeArguments.push('about:blank');
 
     return chromeArguments;
+  }
+
+  async downloadBrowserIfNeeded(onProgress?: OnProgressCallback) {
+    const fetcher = this._createBrowserFetcher();
+    const revisionInfo = fetcher.revisionInfo();
+    // Do nothing if the revision is already downloaded.
+    if (revisionInfo.local)
+      return;
+    await fetcher.download(revisionInfo.revision, onProgress);
   }
 
   _createBrowserFetcher(options: BrowserFetcherOptions = {}): BrowserFetcher {

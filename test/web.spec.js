@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+/**
+ * @type {PageTestSuite}
+ */
 module.exports.describe = function({testRunner, expect, defaultBrowserOptions, playwright, product, CHROMIUM, FFOX}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -43,7 +46,7 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
 
     afterEach(async state => {
       await state.page.evaluate(() => teardown());
-      await state.page.browserContext().close();
+      await state.page.close();
       state.page = null;
     });
 

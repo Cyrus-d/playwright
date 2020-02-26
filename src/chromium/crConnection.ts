@@ -20,8 +20,6 @@ import { ConnectionTransport } from '../transport';
 import { assert } from '../helper';
 import { Protocol } from './protocol';
 
-const debugProtocol = platform.debug('pw:protocol');
-
 export const ConnectionEvents = {
   Disconnected: Symbol('ConnectionEvents.Disconnected')
 };
@@ -36,6 +34,7 @@ export class CRConnection extends platform.EventEmitter {
   private _sessions = new Map<string, CRSession>();
   readonly rootSession: CRSession;
   _closed = false;
+  _debugProtocol: (message: string) => void;
 
   constructor(transport: ConnectionTransport) {
     super();
@@ -44,6 +43,7 @@ export class CRConnection extends platform.EventEmitter {
     this._transport.onclose = this._onClose.bind(this);
     this.rootSession = new CRSession(this, 'browser', '');
     this._sessions.set('', this.rootSession);
+    this._debugProtocol = platform.debug('pw:protocol');
   }
 
   static fromSession(session: CRSession): CRConnection {
@@ -60,13 +60,13 @@ export class CRConnection extends platform.EventEmitter {
     if (sessionId)
       message.sessionId = sessionId;
     const data = JSON.stringify(message);
-    debugProtocol('SEND ► ' + data);
+    this._debugProtocol('SEND ► ' + (rewriteInjectedScriptEvaluationLog(message) || data));
     this._transport.send(data);
     return id;
   }
 
   async _onMessage(message: string) {
-    debugProtocol('◀ RECV ' + message);
+    this._debugProtocol('◀ RECV ' + message);
     const object = JSON.parse(message);
     if (object.id === kBrowserCloseMessageId)
       return;
@@ -191,4 +191,11 @@ function createProtocolError(error: Error, method: string, object: { error: { me
 function rewriteError(error: Error, message: string): Error {
   error.message = message;
   return error;
+}
+
+function rewriteInjectedScriptEvaluationLog(message: any): string | undefined {
+  // Injected script is very long and clutters protocol logs.
+  // To increase development velocity, we skip replace it with short description in the log.
+  if (message.method === 'Runtime.evaluate' && message.params && message.params.expression && message.params.expression.includes('src/injected/injected.ts'))
+    return `{"id":${message.id} [evaluate injected script]}`;
 }

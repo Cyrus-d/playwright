@@ -16,31 +16,34 @@
 
 const utils = require('./utils');
 
+/**
+ * @type {BrowserTestSuite}
+ */
 module.exports.describe = function({testRunner, expect, playwright, CHROMIUM, WEBKIT}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
   const {beforeAll, beforeEach, afterAll, afterEach} = testRunner;
 
-  describe('Browser', function() {
-    it('should create new page', async function({browser, newPage}) {
-      expect((await browser.pages()).length).toBe(0);
-      const page1 = await newPage();
-      expect((await browser.pages()).length).toBe(1);
-      expect(browser.browserContexts().length).toBe(1);
+  describe('Browser.newPage', function() {
+    it('should create new page', async function({browser}) {
+      const page1 = await browser.newPage();
+      expect(browser.contexts().length).toBe(1);
 
-      const page2 = await newPage();
-      expect((await browser.pages()).length).toBe(2);
-      expect(browser.browserContexts().length).toBe(2);
+      const page2 = await browser.newPage();
+      expect(browser.contexts().length).toBe(2);
 
       await page1.close();
-      expect((await browser.pages()).length).toBe(1);
-      expect(browser.browserContexts().length).toBe(2);
+      expect(browser.contexts().length).toBe(1);
 
-      await page2.browserContext().close();
-      expect((await browser.pages()).length).toBe(0);
-      expect(browser.browserContexts().length).toBe(1);
-      await page1.browserContext().close();
-      expect(browser.browserContexts().length).toBe(0);
+      await page2.close();
+      expect(browser.contexts().length).toBe(0);
+    });
+    it('should throw upon second create new page', async function({browser}) {
+      const page = await browser.newPage();
+      let error;
+      await page.context().newPage().catch(e => error = e);
+      await page.close();
+      expect(error.message).toContain('Please use browser.newContext()');
     });
   });
 };

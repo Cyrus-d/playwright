@@ -17,6 +17,9 @@
 const fs = require('fs');
 const path = require('path');
 
+/**
+ * @type {ChromiumTestSuite}
+ */
 module.exports.describe = function({testRunner, expect, defaultBrowserOptions, playwright, ASSETS_DIR}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -55,7 +58,7 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
       const newPage = await browser.newPage();
       let error = null;
       await browser.startTracing(newPage, {path: outputFile}).catch(e => error = e);
-      await newPage.browserContext().close();
+      await newPage.close();
       expect(error).toBeTruthy();
       await browser.stopTracing();
     });
@@ -77,7 +80,7 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
       await page.goto(server.PREFIX + '/grid.html');
       const oldBufferConcat = Buffer.concat;
       Buffer.concat = bufs => {
-        throw 'error';
+        throw new Error('Buffer.concat fake error, should be caught by playwright');
       };
       const trace = await browser.stopTracing();
       expect(trace).toEqual(null);

@@ -24,6 +24,9 @@ const {Matchers} = require('../utils/testrunner/');
 const YELLOW_COLOR = '\x1b[33m';
 const RESET_COLOR = '\x1b[0m';
 
+/**
+ * @type {TestSuite}
+ */
 module.exports.describe = ({testRunner, product, playwrightPath}) => {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -39,9 +42,15 @@ module.exports.describe = ({testRunner, product, playwrightPath}) => {
   const playwrightModule = require(playwrightPath);
   const playwright = playwrightModule[product.toLowerCase()];
 
-  const headless = (process.env.HEADLESS || 'true').trim().toLowerCase() === 'true';
-  const slowMo = parseInt((process.env.SLOW_MO || '0').trim(), 10);
+  const headless = !!valueFromEnv('HEADLESS', true);
+  const slowMo = valueFromEnv('SLOW_MO', 0);
+  const dumpProtocolOnFailure = valueFromEnv('DEBUGP', false);
 
+  function valueFromEnv(name, defaultValue) {
+    if (!(name in process.env))
+      return defaultValue;
+    return JSON.parse(process.env[name]);
+  }
   const executablePath = {
     'Chromium': process.env.CRPATH,
     'Firefox': process.env.FFPATH,
@@ -103,8 +112,9 @@ module.exports.describe = ({testRunner, product, playwrightPath}) => {
     });
 
     beforeEach(async(state, test) => {
-      const contexts = [];
       const onLine = (line) => test.output += line + '\n';
+      if (dumpProtocolOnFailure)
+        state.browser._setDebugFunction(onLine);
 
       let rl;
       if (state.browserServer.process().stderr) {
@@ -114,36 +124,32 @@ module.exports.describe = ({testRunner, product, playwrightPath}) => {
       }
 
       state.tearDown = async () => {
-        await Promise.all(contexts.map(c => c.close()));
         if (rl) {
           rl.removeListener('line', onLine);
           rl.close();
         }
-      };
-
-      state.newContext = async (options) => {
-        const context = await state.browser.newContext(options);
-        contexts.push(context);
-        return context;
-      };
-
-      state.newPage = async (options) => {
-        const context = await state.newContext(options);
-        return await context.newPage();
+        if (dumpProtocolOnFailure)
+          state.browser._setDebugFunction(() => void 0);
       };
     });
 
-    afterEach(async state => {
+    afterEach(async (state, test) => {
+      if (state.browser.contexts().length !== 0) {
+        if (test.result === 'ok')
+          console.warn(`\nWARNING: test "${test.fullName}" (${test.location.fileName}:${test.location.lineNumber}) did not close all created contexts!\n`);
+        await Promise.all(state.browser.contexts().map(context => context.close()));
+      }
       await state.tearDown();
     });
 
     describe('Page', function() {
       beforeEach(async state => {
-        state.context = await state.newContext();
+        state.context = await state.browser.newContext();
         state.page = await state.context.newPage();
       });
 
       afterEach(async state => {
+        await state.context.close();
         state.context = null;
         state.page = null;
       });
@@ -158,6 +164,7 @@ module.exports.describe = ({testRunner, product, playwrightPath}) => {
       testRunner.loadTests(require('./emulation.spec.js'), testOptions);
       testRunner.loadTests(require('./evaluation.spec.js'), testOptions);
       testRunner.loadTests(require('./frame.spec.js'), testOptions);
+      testRunner.loadTests(require('./focus.spec.js'), testOptions);
       testRunner.loadTests(require('./input.spec.js'), testOptions);
       testRunner.loadTests(require('./jshandle.spec.js'), testOptions);
       testRunner.loadTests(require('./keyboard.spec.js'), testOptions);
@@ -193,6 +200,7 @@ module.exports.describe = ({testRunner, product, playwrightPath}) => {
     testRunner.loadTests(require('./browser.spec.js'), testOptions);
     testRunner.loadTests(require('./browsercontext.spec.js'), testOptions);
     testRunner.loadTests(require('./ignorehttpserrors.spec.js'), testOptions);
+    testRunner.loadTests(require('./popup.spec.js'), testOptions);
   });
 
   // Top-level tests that launch Browser themselves.

@@ -16,8 +16,10 @@
  */
 
 const utils = require('./utils');
-const { performance } = require('perf_hooks');
 
+/**
+ * @type {PageTestSuite}
+ */
 module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FFOX, CHROMIUM, WEBKIT}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -196,9 +198,20 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
       // Hang for request to the empty.html
       server.setRoute('/empty.html', (req, res) => { });
       let error = null;
+      page.context().setDefaultNavigationTimeout(2);
       page.setDefaultNavigationTimeout(1);
       await page.goto(server.PREFIX + '/empty.html').catch(e => error = e);
       const message = 'Navigation timeout of 1 ms exceeded';
+      expect(error.message).toContain(message);
+      expect(error).toBeInstanceOf(playwright.errors.TimeoutError);
+    });
+    it('should fail when exceeding browser context navigation timeout', async({page, server}) => {
+      // Hang for request to the empty.html
+      server.setRoute('/empty.html', (req, res) => { });
+      let error = null;
+      page.context().setDefaultNavigationTimeout(2);
+      await page.goto(server.PREFIX + '/empty.html').catch(e => error = e);
+      const message = 'Navigation timeout of 2 ms exceeded';
       expect(error.message).toContain(message);
       expect(error).toBeInstanceOf(playwright.errors.TimeoutError);
     });
@@ -206,9 +219,20 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
       // Hang for request to the empty.html
       server.setRoute('/empty.html', (req, res) => { });
       let error = null;
+      page.context().setDefaultTimeout(2);
       page.setDefaultTimeout(1);
       await page.goto(server.PREFIX + '/empty.html').catch(e => error = e);
       const message = 'Navigation timeout of 1 ms exceeded';
+      expect(error.message).toContain(message);
+      expect(error).toBeInstanceOf(playwright.errors.TimeoutError);
+    });
+    it('should fail when exceeding browser context timeout', async({page, server}) => {
+      // Hang for request to the empty.html
+      server.setRoute('/empty.html', (req, res) => { });
+      let error = null;
+      page.context().setDefaultTimeout(2);
+      await page.goto(server.PREFIX + '/empty.html').catch(e => error = e);
+      const message = 'Navigation timeout of 2 ms exceeded';
       expect(error.message).toContain(message);
       expect(error).toBeInstanceOf(playwright.errors.TimeoutError);
     });
@@ -352,14 +376,13 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
       expect(request2.headers['referer']).toBe(undefined);
       expect(page.url()).toBe(server.PREFIX + '/grid.html');
     });
-    it.skip(FFOX)('should fail when canceled by another navigation', async({page, server}) => {
-      server.setRoute('/one-style.css', (req, res) => {});
-      // For some reason, Firefox issues load event with one outstanding request.
-      const failed = page.goto(server.PREFIX + '/one-style.html', { waitUntil: FFOX ? 'networkidle0' : 'load' }).catch(e => e);
-      await server.waitForRequest('/one-style.css');
+    it('should fail when canceled by another navigation', async({page, server}) => {
+      server.setRoute('/one-style.html', (req, res) => {});
+      const failed = page.goto(server.PREFIX + '/one-style.html').catch(e => e);
+      await server.waitForRequest('/one-style.html');
       await page.goto(server.PREFIX + '/empty.html');
       const error = await failed;
-      expect(error.message).toBe('Navigation to ' + server.PREFIX + '/one-style.html was canceled by another one');
+      expect(error.message).toBeTruthy();
     });
 
     describe('network idle', function() {
@@ -372,29 +395,39 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
         expect(response.status()).toBe(200);
       });
 
+      /**
+       * @param {import('../src/frames').Frame} frame 
+       * @param {TestServer} server 
+       * @param {'networkidle0'|'networkidle2'} signal 
+       * @param {() => Promise<void>} action 
+       * @param {boolean} isSetContent 
+       */
       async function networkIdleTest(frame, server, signal, action, isSetContent) {
-        let lastResponseFinished;
         const finishResponse = response => {
-          lastResponseFinished = performance.now();
           response.statusCode = 404;
           response.end(`File not found`);
         };
-
+        const waitForRequest = suffix => {
+          return Promise.all([
+            server.waitForRequest(suffix),
+            frame._page.waitForRequest(server.PREFIX + suffix),
+          ])
+        }
         let responses = {};
         // Hold on to a bunch of requests without answering.
         server.setRoute('/fetch-request-a.js', (req, res) => responses.a = res);
         server.setRoute('/fetch-request-b.js', (req, res) => responses.b = res);
         server.setRoute('/fetch-request-c.js', (req, res) => responses.c = res);
         const initialFetchResourcesRequested = Promise.all([
-          server.waitForRequest('/fetch-request-a.js'),
-          server.waitForRequest('/fetch-request-b.js'),
-          server.waitForRequest('/fetch-request-c.js'),
+          waitForRequest('/fetch-request-a.js'),
+          waitForRequest('/fetch-request-b.js'),
+          waitForRequest('/fetch-request-c.js')
         ]);
 
         let secondFetchResourceRequested;
         if (signal === 'networkidle0') {
           server.setRoute('/fetch-request-d.js', (req, res) => responses.d = res);
-          secondFetchResourceRequested = server.waitForRequest('/fetch-request-d.js');
+          secondFetchResourceRequested = waitForRequest('/fetch-request-d.js');
         }
 
         const waitForLoadPromise = isSetContent ? Promise.resolve() : frame.waitForNavigation({ waitUntil: 'load' });
@@ -418,10 +451,11 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
         expect(responses.a).toBeTruthy();
         expect(responses.b).toBeTruthy();
         expect(responses.c).toBeTruthy();
-        // Finishing first response should leave 2 requests alive and trigger networkidle2.
-        finishResponse(responses.a);
-
+        let timer;
+        let timerTriggered = false;
         if (signal === 'networkidle0') {
+          // Finishing first response should leave 2 requests alive and trigger networkidle2.
+          finishResponse(responses.a);
           // Finishing two more responses should trigger the second round.
           finishResponse(responses.b);
           finishResponse(responses.c);
@@ -430,11 +464,16 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
           await secondFetchResourceRequested;
           expect(actionFinished).toBe(false);
           // Finishing the last response should trigger networkidle0.
+          timer = setTimeout(() => timerTriggered = true, 500);
           finishResponse(responses.d);
+        } else {
+          timer = setTimeout(() => timerTriggered = true, 500);
+          // Finishing first response should leave 2 requests alive and trigger networkidle2.
+          finishResponse(responses.a);
         }
-
         const response = await actionPromise;
-        expect(performance.now() - lastResponseFinished).not.toBeLessThan(450);
+        clearTimeout(timer);
+        expect(timerTriggered).toBe(true);
         if (!isSetContent)
           expect(response.ok()).toBe(true);
 
@@ -499,7 +538,7 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
       });
       it.skip(FFOX)('should wait for networkidle0 in setContent with request from previous navigation', async({page, server}) => {
         // TODO: in Firefox window.stop() does not cancel outstanding requests, and we also lack 'init' lifecycle,
-        // therefore we don't clear inglight requests at the right time.
+        // therefore we don't clear inflight requests at the right time.
         await page.goto(server.EMPTY_PAGE);
         server.setRoute('/foo.js', () => {});
         await page.setContent(`<script>fetch('foo.js');</script>`);
@@ -509,7 +548,7 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
       });
       it.skip(FFOX)('should wait for networkidle2 in setContent with request from previous navigation', async({page, server}) => {
         // TODO: in Firefox window.stop() does not cancel outstanding requests, and we also lack 'init' lifecycle,
-        // therefore we don't clear inglight requests at the right time.
+        // therefore we don't clear inflight requests at the right time.
         await page.goto(server.EMPTY_PAGE);
         server.setRoute('/foo.js', () => {});
         await page.setContent(`<script>fetch('foo.js');</script>`);
@@ -657,7 +696,7 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
       expect(forwardResponse).toBe(null);
       expect(page.url()).toBe(server.PREFIX + '/second.html');
     });
-    it.skip(FFOX)('should work when subframe issues window.stop()', async({page, server}) => {
+    it('should work when subframe issues window.stop()', async({page, server}) => {
       server.setRoute('/frames/style.css', (req, res) => {});
       const navigationPromise = page.goto(server.PREFIX + '/frames/one-frame.html');
       const frame = await new Promise(f => page.once('frameattached', f));
@@ -723,30 +762,37 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
       await waitPromise;
       expect(resolved).toBe(true);
     });
+    it('should work for cross-process navigations', async({page, server}) => {
+      await page.goto(server.EMPTY_PAGE);
+      const waitPromise = page.waitForNavigation({waitUntil: []});
+      const url = server.CROSS_PROCESS_PREFIX + '/empty.html';
+      const gotoPromise = page.goto(url);
+      const response = await waitPromise;
+      expect(response.url()).toBe(url);
+      expect(page.url()).toBe(url);
+      expect(await page.evaluate('document.location.href')).toBe(url);
+      await gotoPromise;
+    });
   });
 
   describe('Page.waitForLoadState', () => {
     it('should pick up ongoing navigation', async({page, server}) => {
       let response = null;
       server.setRoute('/one-style.css', (req, res) => response = res);
-      const navigationPromise = page.goto(server.PREFIX + '/one-style.html');
-      await server.waitForRequest('/one-style.css');
+      await Promise.all([
+        server.waitForRequest('/one-style.css'),
+        page.goto(server.PREFIX + '/one-style.html', {waitUntil: []}),
+      ]);
       const waitPromise = page.waitForLoadState();
       response.statusCode = 404;
       response.end('Not found');
       await waitPromise;
-      await navigationPromise;
     });
     it('should respect timeout', async({page, server}) => {
-      let response = null;
       server.setRoute('/one-style.css', (req, res) => response = res);
-      const navigationPromise = page.goto(server.PREFIX + '/one-style.html');
-      await server.waitForRequest('/one-style.css');
+      await page.goto(server.PREFIX + '/one-style.html', {waitUntil: []});
       const error = await page.waitForLoadState({ timeout: 1 }).catch(e => e);
       expect(error.message).toBe('Navigation timeout of 1 ms exceeded');
-      response.statusCode = 404;
-      response.end('Not found');
-      await navigationPromise;
     });
     it('should resolve immediately if loaded', async({page, server}) => {
       await page.goto(server.PREFIX + '/one-style.html');
@@ -754,16 +800,11 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
     });
     it('should resolve immediately if load state matches', async({page, server}) => {
       await page.goto(server.EMPTY_PAGE);
-      let response = null;
       server.setRoute('/one-style.css', (req, res) => response = res);
-      const navigationPromise = page.goto(server.PREFIX + '/one-style.html');
-      await server.waitForRequest('/one-style.css');
+      await page.goto(server.PREFIX + '/one-style.html', {waitUntil: []});
       await page.waitForLoadState({ waitUntil: 'domcontentloaded' });
-      response.statusCode = 404;
-      response.end('Not found');
-      await navigationPromise;
     });
-    it.skip(FFOX)('should work with pages that have loaded before being connected to', async({page, context, server}) => {
+    it('should work with pages that have loaded before being connected to', async({page, context, server}) => {
       await page.goto(server.EMPTY_PAGE);
       await page.evaluate(async () => {
         const child = window.open(document.location.href);
@@ -834,6 +875,7 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
       await page.$eval('iframe', frame => frame.remove());
       const error = await navigationPromise;
       expect(error.message).toContain('frame was detached');
+      expect(error.stack).toContain('Frame.goto')
     });
     it('should return matching responses', async({page, server}) => {
       // Disable cache: otherwise, chromium will cache similar requests.
@@ -891,6 +933,24 @@ module.exports.describe = function({testRunner, expect, playwright, MAC, WIN, FF
       await page.$eval('iframe', frame => frame.remove());
       await navigationPromise;
       expect(error.message).toContain('frame was detached');
+    });
+  });
+
+  describe('Frame.waitForLodState', function() {
+    it('should work', async({page, server}) => {
+      await page.goto(server.PREFIX + '/frames/one-frame.html');
+      const frame = page.frames()[1];
+
+      const requestPromise = new Promise(resolve => page.route(server.PREFIX + '/one-style.css',resolve));
+      await frame.goto(server.PREFIX + '/one-style.html', {waitUntil: 'domcontentloaded'});
+      const request = await requestPromise;
+      let resolved = false;
+      const loadPromise = frame.waitForLoadState().then(() => resolved = true);
+      // give the promise a chance to resolve, even though it shouldn't
+      await page.evaluate('1');
+      expect(resolved).toBe(false);
+      request.continue();
+      await loadPromise;
     });
   });
 

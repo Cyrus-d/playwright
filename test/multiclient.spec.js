@@ -17,6 +17,9 @@
 
 const utils = require('./utils');
 
+/**
+ * @type {TestSuite}
+ */
 module.exports.describe = function({testRunner, expect, defaultBrowserOptions, playwright, FFOX, CHROMIUM, WEBKIT}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -26,16 +29,16 @@ module.exports.describe = function({testRunner, expect, defaultBrowserOptions, p
     it('should work across sessions', async () => {
       const browserServer = await playwright.launchServer(defaultBrowserOptions);
       const browser1 = await playwright.connect({ wsEndpoint: browserServer.wsEndpoint() });
-      expect(browser1.browserContexts().length).toBe(0);
+      expect(browser1.contexts().length).toBe(0);
       await browser1.newContext();
-      expect(browser1.browserContexts().length).toBe(1);
+      expect(browser1.contexts().length).toBe(1);
 
       const browser2 = await playwright.connect({ wsEndpoint: browserServer.wsEndpoint() });
-      expect(browser2.browserContexts().length).toBe(0);
+      expect(browser2.contexts().length).toBe(0);
       await browser2.newContext();
-      expect(browser2.browserContexts().length).toBe(1);
+      expect(browser2.contexts().length).toBe(1);
 
-      expect(browser1.browserContexts().length).toBe(1);
+      expect(browser1.contexts().length).toBe(1);
       await browserServer.close();
     });
   });

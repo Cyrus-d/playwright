@@ -15,23 +15,23 @@
  * limitations under the License.
  */
 
-import { BrowserFetcher, BrowserFetcherOptions } from './browserFetcher';
+import { BrowserFetcher, OnProgressCallback, BrowserFetcherOptions } from './browserFetcher';
 import { DeviceDescriptors } from '../deviceDescriptors';
 import { TimeoutError } from '../errors';
 import * as types from '../types';
 import { WKBrowser } from '../webkit/wkBrowser';
 import { execSync } from 'child_process';
 import { PipeTransport } from './pipeTransport';
-import { launchProcess } from './processLauncher';
+import { launchProcess, waitForLine } from './processLauncher';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as platform from '../platform';
 import * as util from 'util';
 import * as os from 'os';
-import { assert } from '../helper';
+import { assert, helper } from '../helper';
 import { kBrowserCloseMessageId } from '../webkit/wkConnection';
 import { LaunchOptions, BrowserArgOptions, BrowserType } from './browserType';
-import { ConnectionTransport } from '../transport';
+import { ConnectionTransport, DeferWriteTransport } from '../transport';
 import * as ws from 'ws';
 import * as uuidv4 from 'uuid/v4';
 import { ConnectOptions, LaunchType } from '../browser';
@@ -52,7 +52,18 @@ export class WebKit implements BrowserType {
     return 'webkit';
   }
 
+  async downloadBrowserIfNeeded(onProgress?: OnProgressCallback) {
+    const fetcher = this._createBrowserFetcher();
+    const revisionInfo = fetcher.revisionInfo();
+    // Do nothing if the revision is already downloaded.
+    if (revisionInfo.local)
+      return;
+    await fetcher.download(revisionInfo.revision, onProgress);
+  }
+
   async launch(options?: LaunchOptions & { slowMo?: number }): Promise<WKBrowser> {
+    if (options && (options as any).userDataDir)
+      throw new Error('userDataDir option is not supported in `browserType.launch`. Use `browserType.launchPersistent` instead');
     const { browserServer, transport } = await this._launchServer(options, 'local');
     const browser = await WKBrowser.connect(transport!, options && options.slowMo);
     // Hack: for typical launch scenario, ensure that close waits for actual process termination.
@@ -66,8 +77,10 @@ export class WebKit implements BrowserType {
   }
 
   async launchPersistent(userDataDir: string, options?: LaunchOptions): Promise<BrowserContext> {
+    const { timeout = 30000 } = options || {};
     const { browserServer, transport } = await this._launchServer(options, 'persistent', userDataDir);
     const browser = await WKBrowser.connect(transport!);
+    await helper.waitWithTimeout(browser._waitForFirstPageTarget(), 'first page', timeout);
     // Hack: for typical launch scenario, ensure that close waits for actual process termination.
     const browserContext = browser._defaultContext;
     browserContext.close = () => browserServer.close();
@@ -109,7 +122,7 @@ export class WebKit implements BrowserType {
       webkitExecutable = executablePath;
     }
 
-    let transport: PipeTransport | undefined = undefined;
+    let transport: ConnectionTransport | undefined = undefined;
     let browserServer: BrowserServer | undefined = undefined;
     const { launchedProcess, gracefullyClose } = await launchProcess({
       executablePath: webkitExecutable!,
@@ -136,8 +149,9 @@ export class WebKit implements BrowserType {
       },
     });
 
-    const timeoutError = new TimeoutError(`Timed out after ${timeout} ms while trying to connect to WebKit!`);
-    transport = new PipeTransport(launchedProcess.stdio[3] as NodeJS.WritableStream, launchedProcess.stdio[4] as NodeJS.ReadableStream);
+    const timeoutError = new TimeoutError(`Timed out after ${timeout} ms while trying to connect to WebKit! The only WebKit revision guaranteed to work is r${this._revision}`);
+    await waitForLine(launchedProcess, launchedProcess.stdout, /^Web Inspector is reading from pipe #3$/, timeout, timeoutError);
+    transport = new DeferWriteTransport(new PipeTransport(launchedProcess.stdio[3] as NodeJS.WritableStream, launchedProcess.stdio[4] as NodeJS.ReadableStream));
     browserServer = new BrowserServer(launchedProcess, gracefullyClose, launchType === 'server' ? await wrapTransportWithWebSocket(transport, port || 0) : null);
     return { browserServer, transport };
   }
@@ -264,11 +278,8 @@ async function wrapTransportWithWebSocket(transport: ConnectionTransport, port: 
   const browserContextIds = new Map<string, ws>();
   const pageProxyIds = new Map<string, ws>();
   const sockets = new Set<ws>();
-  let transportReadyCallback: () => void;
-  const transportReady = new Promise(f => transportReadyCallback = f);
 
   transport.onmessage = message => {
-    transportReadyCallback();
     const parsedMessage = JSON.parse(message);
     if ('id' in parsedMessage) {
       if (parsedMessage.id === -9999)
@@ -404,6 +415,5 @@ async function wrapTransportWithWebSocket(transport: ConnectionTransport, port: 
   const address = server.address();
   if (typeof address === 'string')
     return address + '/' + guid;
-  await transportReady;
   return 'ws://127.0.0.1:' + address.port + '/' + guid;
 }

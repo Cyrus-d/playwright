@@ -18,7 +18,11 @@ const fs = require('fs');
 const path = require('path');
 const utils = require('./utils');
 const {waitEvent} = utils;
+const vm = require('vm');
 
+/**
+ * @type {PageTestSuite}
+ */
 module.exports.describe = function({testRunner, expect, headless, playwright, FFOX, CHROMIUM, WEBKIT}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -73,7 +77,7 @@ module.exports.describe = function({testRunner, expect, headless, playwright, FF
       await newPage.close();
       expect(newPage.isClosed()).toBe(true);
     });
-    it.skip(FFOX)('should terminate network waiters', async({context, server}) => {
+    it('should terminate network waiters', async({context, server}) => {
       const newPage = await context.newPage();
       const results = await Promise.all([
         newPage.waitForRequest(server.EMPTY_PAGE).catch(e => e),
@@ -109,80 +113,19 @@ module.exports.describe = function({testRunner, expect, headless, playwright, FF
     });
   });
 
-  describe.skip(FFOX)('Page.Events.error', function() {
+  describe('Page.Events.error', function() {
     it('should throw when page crashes', async({page}) => {
+      await page.setContent(`<div>This page should crash</div>`);
       let error = null;
       page.on('error', err => error = err);
       if (CHROMIUM)
         page.goto('chrome://crash').catch(e => {});
       else if (WEBKIT)
         page._delegate._session.send('Page.crash', {}).catch(e => {});
+      else if (FFOX)
+        page._delegate._session.send('Page.crash', {}).catch(e => {});
       await waitEvent(page, 'error');
       expect(error.message).toBe('Page crashed!');
-    });
-  });
-
-  describe('Page.Events.Popup', function() {
-    it('should work', async({page}) => {
-      const [popup] = await Promise.all([
-        new Promise(x => page.once('popup', x)),
-        page.evaluate(() => window.open('about:blank')),
-      ]);
-      expect(await page.evaluate(() => !!window.opener)).toBe(false);
-      expect(await popup.evaluate(() => !!window.opener)).toBe(true);
-    });
-    it('should work with noopener', async({page}) => {
-      const [popup] = await Promise.all([
-        new Promise(x => page.once('popup', x)),
-        page.evaluate(() => window.open('about:blank', null, 'noopener')),
-      ]);
-      expect(await page.evaluate(() => !!window.opener)).toBe(false);
-      expect(await popup.evaluate(() => !!window.opener)).toBe(false);
-    });
-    it.skip(FFOX)('should work with clicking target=_blank', async({page, server}) => {
-      await page.goto(server.EMPTY_PAGE);
-      await page.setContent('<a target=_blank rel="opener" href="/one-style.html">yo</a>');
-      const [popup] = await Promise.all([
-        page.waitForEvent('popup').then(async popup => { await popup.waitForLoadState(); return popup; }),
-        page.click('a'),
-      ]);
-      expect(await page.evaluate(() => !!window.opener)).toBe(false);
-      expect(await popup.evaluate(() => !!window.opener)).toBe(true);
-    });
-    it.skip(FFOX)('should work with fake-clicking target=_blank and rel=noopener', async({page, server}) => {
-      // TODO: FFOX sends events for "one-style.html" request to both pages.
-      await page.goto(server.EMPTY_PAGE);
-      await page.setContent('<a target=_blank rel=noopener href="/one-style.html">yo</a>');
-      const [popup] = await Promise.all([
-        page.waitForEvent('popup').then(async popup => { await popup.waitForLoadState(); return popup; }),
-        page.$eval('a', a => a.click()),
-      ]);
-      expect(await page.evaluate(() => !!window.opener)).toBe(false);
-      // TODO: At this point popup might still have about:blank as the current document.
-      // FFOX is slow enough to trigger this. We should do something about popups api.
-      expect(await popup.evaluate(() => !!window.opener)).toBe(false);
-    });
-    it.skip(FFOX)('should work with clicking target=_blank and rel=noopener', async({page, server}) => {
-      await page.goto(server.EMPTY_PAGE);
-      await page.setContent('<a target=_blank rel=noopener href="/one-style.html">yo</a>');
-      const [popup] = await Promise.all([
-        page.waitForEvent('popup').then(async popup => { await popup.waitForLoadState(); return popup; }),
-        page.click('a'),
-      ]);
-      expect(await page.evaluate(() => !!window.opener)).toBe(false);
-      expect(await popup.evaluate(() => !!window.opener)).toBe(false);
-    });
-    it.skip(FFOX)('should not treat navigations as new popups', async({page, server}) => {
-      await page.goto(server.EMPTY_PAGE);
-      await page.setContent('<a target=_blank rel=noopener href="/one-style.html">yo</a>');
-      const [popup] = await Promise.all([
-        page.waitForEvent('popup').then(async popup => { await popup.waitForLoadState(); return popup; }),
-        page.click('a'),
-      ]);
-      let badSecondPopup = false;
-      page.on('popup', () => badSecondPopup = true);
-      await popup.goto(server.CROSS_PROCESS_PREFIX + '/empty.html');
-      expect(badSecondPopup).toBe(false);
     });
   });
 
@@ -281,30 +224,31 @@ module.exports.describe = function({testRunner, expect, headless, playwright, FF
       });
     });
     // @see https://github.com/GoogleChrome/puppeteer/issues/3865
-    it.skip(FFOX)('should not throw when there are console messages in detached iframes', async({page, server}) => {
+    it('should not throw when there are console messages in detached iframes', async({page, server}) => {
       await page.goto(server.EMPTY_PAGE);
       await page.evaluate(async() => {
         // 1. Create a popup that Playwright is not connected to.
         const win = window.open(window.location.href, 'Title', 'toolbar=no,location=no,directories=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=780,height=200,top=0,left=0');
-        while (window.document.readyState !== 'complete')
-          await new Promise(f => setTimeout(f, 100));
+        if (window.document.readyState !== 'complete')
+          await new Promise(f => window.addEventListener('load', f));
         // 2. In this popup, create an iframe that console.logs a message.
         win.document.body.innerHTML = `<iframe src='/consolelog.html'></iframe>`;
         const frame = win.document.querySelector('iframe');
-        while (frame.contentDocument.readyState !== 'complete')
-          await new Promise(f => setTimeout(f, 100));
+        if (!frame.contentDocument || frame.contentDocument.readyState !== 'complete')
+          await new Promise(f => frame.addEventListener('load', f));
         // 3. After that, remove the iframe.
         frame.remove();
       });
       // 4. Connect to the popup and make sure it doesn't throw.
-      await page.browserContext().pages();
+      await page.context().pages();
     });
   });
 
   describe('Page.Events.DOMContentLoaded', function() {
     it('should fire when expected', async({page, server}) => {
-      page.goto('about:blank');
+      const navigatedPromise = page.goto('about:blank');
       await waitEvent(page, 'domcontentloaded');
+      await navigatedPromise;
     });
   });
 
@@ -360,6 +304,19 @@ module.exports.describe = function({testRunner, expect, headless, playwright, FF
       await page.goto(server.EMPTY_PAGE);
       const [request] = await Promise.all([
         page.waitForRequest(/digits\/\d\.png/),
+        page.evaluate(() => {
+          fetch('/digits/1.png');
+        })
+      ]);
+      expect(request.url()).toBe(server.PREFIX + '/digits/1.png');
+    });
+    it('should work with url match regular expression from a different context', async({page, server}) => {
+      const ctx = vm.createContext();
+      const regexp = vm.runInContext('new RegExp(/digits\\/\\d\\.png/)', ctx);
+
+      await page.goto(server.EMPTY_PAGE);
+      const [request] = await Promise.all([
+        page.waitForRequest(regexp),
         page.evaluate(() => {
           fetch('/digits/1.png');
         })
@@ -1088,12 +1045,12 @@ module.exports.describe = function({testRunner, expect, headless, playwright, FF
     it('should throw on hidden and invisible elements', async({page, server}) => {
       await page.goto(server.PREFIX + '/input/textarea.html');
       await page.$eval('input', i => i.style.display = 'none');
-      const invisibleError = await page.fill('input', 'some value', { waitFor: 'nowait' }).catch(e => e);
+      const invisibleError = await page.fill('input', 'some value', { waitFor: false }).catch(e => e);
       expect(invisibleError.message).toBe('Element is not visible');
 
       await page.goto(server.PREFIX + '/input/textarea.html');
       await page.$eval('input', i => i.style.visibility = 'hidden');
-      const hiddenError = await page.fill('input', 'some value', { waitFor: 'nowait' }).catch(e => e);
+      const hiddenError = await page.fill('input', 'some value', { waitFor: false }).catch(e => e);
       expect(hiddenError.message).toBe('Element is hidden');
     });
     it('should be able to fill the body', async({page}) => {
@@ -1160,7 +1117,7 @@ module.exports.describe = function({testRunner, expect, headless, playwright, FF
 
   describe('Page.browserContext', function() {
     it('should return the correct browser instance', async function({page, context}) {
-      expect(page.browserContext()).toBe(context);
+      expect(page.context()).toBe(context);
     });
   });
 };

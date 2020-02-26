@@ -24,11 +24,13 @@ export { TimeoutError } from './errors';
 export { Frame } from './frames';
 export { Keyboard, Mouse } from './input';
 export { JSHandle } from './javascript';
-export { Request, Response, WebSocket } from './network';
-export { Coverage, FileChooser, Page, Worker } from './page';
+export { Request, Response } from './network';
+export { FileChooser, Page, Worker } from './page';
 export { Selectors } from './selectors';
 
 export { CRBrowser as ChromiumBrowser } from './chromium/crBrowser';
+export { CRBrowserContext as ChromiumBrowserContext } from './chromium/crBrowser';
+export { CRCoverage as ChromiumCoverage } from './chromium/crCoverage';
 export { CRSession as ChromiumSession } from './chromium/crConnection';
 export { CRTarget as ChromiumTarget } from './chromium/crTarget';
 

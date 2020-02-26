@@ -20,11 +20,11 @@ import { Page } from './page';
 
 export interface Browser extends platform.EventEmitterType {
   newContext(options?: BrowserContextOptions): Promise<BrowserContext>;
-  browserContexts(): BrowserContext[];
-  pages(): Promise<Page[]>;
-  newPage(url?: string, options?: BrowserContextOptions): Promise<Page>;
+  contexts(): BrowserContext[];
+  newPage(options?: BrowserContextOptions): Promise<Page>;
   isConnected(): boolean;
   close(): Promise<void>;
+  _setDebugFunction(debugFunction: (message: string) => void): void;
 }
 
 export type ConnectOptions = {
@@ -32,14 +32,11 @@ export type ConnectOptions = {
   wsEndpoint: string
 };
 
-export async function collectPages(browser: Browser): Promise<Page[]> {
-  const result: Promise<Page[]>[] = [];
-  for (const browserContext of browser.browserContexts())
-    result.push(browserContext.pages());
-  const pages: Page[] = [];
-  for (const group of await Promise.all(result))
-    pages.push(...group);
-  return pages;
+export async function createPageInNewContext(browser: Browser, options?: BrowserContextOptions): Promise<Page> {
+  const context = await browser.newContext(options);
+  const page = await context.newPage();
+  page._ownedContext = context;
+  return page;
 }
 
 export type LaunchType = 'local' | 'server' | 'persistent';

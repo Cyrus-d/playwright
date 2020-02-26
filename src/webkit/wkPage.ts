@@ -24,7 +24,7 @@ import { Events } from '../events';
 import { WKExecutionContext } from './wkExecutionContext';
 import { WKInterceptableRequest } from './wkInterceptableRequest';
 import { WKWorkers } from './wkWorkers';
-import { Page, PageDelegate, Coverage } from '../page';
+import { Page, PageDelegate } from '../page';
 import { Protocol } from './protocol';
 import * as dialog from '../dialog';
 import { BrowserContext } from '../browserContext';
@@ -68,9 +68,10 @@ export class WKPage implements PageDelegate {
   private async _initializePageProxySession() {
     const promises: Promise<any>[] = [
       this._pageProxySession.send('Dialog.enable'),
+      this._pageProxySession.send('Emulation.setActiveAndFocused', { active: true }),
       this.authenticate(this._page._state.credentials)
     ];
-    const contextOptions = this._page.browserContext()._options;
+    const contextOptions = this._page.context()._options;
     if (contextOptions.javaScriptEnabled === false)
       promises.push(this._pageProxySession.send('Emulation.setJavaScriptEnabled', { enabled: false }));
     if (this._page._state.viewportSize || contextOptions.viewport)
@@ -130,7 +131,7 @@ export class WKPage implements PageDelegate {
     if (this._page._state.cacheEnabled === false)
       promises.push(session.send('Network.setResourceCachingDisabled', { disabled: true }));
 
-    const contextOptions = this._page.browserContext()._options;
+    const contextOptions = this._page.context()._options;
     if (contextOptions.userAgent)
       promises.push(session.send('Page.overrideUserAgent', { value: contextOptions.userAgent }));
     if (this._page._state.mediaType || this._page._state.colorScheme)
@@ -141,10 +142,18 @@ export class WKPage implements PageDelegate {
     }
     if (contextOptions.bypassCSP)
       promises.push(session.send('Page.setBypassCSP', { enabled: true }));
-    if (this._page._state.extraHTTPHeaders !== null)
-      promises.push(session.send('Network.setExtraHTTPHeaders', { headers: this._page._state.extraHTTPHeaders }));
+    if (this._page._state.extraHTTPHeaders || contextOptions.locale) {
+      const headers = this._page._state.extraHTTPHeaders || {};
+      if (contextOptions.locale)
+        headers['Accept-Language'] = contextOptions.locale;
+      promises.push(session.send('Network.setExtraHTTPHeaders', { headers }));
+    }
     if (this._page._state.hasTouch)
       promises.push(session.send('Page.setTouchEmulationEnabled', { enabled: true }));
+    if (contextOptions.timezoneId) {
+      promises.push(session.send('Page.setTimeZone', { timeZone: contextOptions.timezoneId }).
+          catch(e => { throw new Error(`Invalid timezone ID: ${contextOptions.timezoneId}`); }));
+    }
     await Promise.all(promises);
   }
 
@@ -207,13 +216,6 @@ export class WKPage implements PageDelegate {
       helper.addEventListener(this._session, 'Network.responseReceived', e => this._onResponseReceived(e)),
       helper.addEventListener(this._session, 'Network.loadingFinished', e => this._onLoadingFinished(e)),
       helper.addEventListener(this._session, 'Network.loadingFailed', e => this._onLoadingFailed(e)),
-      helper.addEventListener(this._session, 'Network.webSocketCreated', e => this._page._frameManager.onWebSocketCreated(e.requestId, e.url)),
-      helper.addEventListener(this._session, 'Network.webSocketWillSendHandshakeRequest', e => this._page._frameManager.onWebSocketRequest(e.requestId, e.request.headers)),
-      helper.addEventListener(this._session, 'Network.webSocketHandshakeResponseReceived', e => this._page._frameManager.onWebSocketResponse(e.requestId, e.response.status, e.response.statusText, e.response.headers)),
-      helper.addEventListener(this._session, 'Network.webSocketFrameSent', e => e.response.payloadData && this._page._frameManager.onWebSocketFrameSent(e.requestId, e.response.opcode, e.response.payloadData)),
-      helper.addEventListener(this._session, 'Network.webSocketFrameReceived', e => e.response.payloadData && this._page._frameManager.webSocketFrameReceived(e.requestId, e.response.opcode, e.response.payloadData)),
-      helper.addEventListener(this._session, 'Network.webSocketClosed', e => this._page._frameManager.webSocketClosed(e.requestId)),
-      helper.addEventListener(this._session, 'Network.webSocketFrameError', e => this._page._frameManager.webSocketError(e.requestId, e.errorMessage)),
     ];
   }
 
@@ -307,7 +309,7 @@ export class WKPage implements PageDelegate {
       throw new Error('Target closed');
     const pageProxyId = this._pageProxySession.sessionId;
     const result = await this._pageProxySession.connection.browserSession.send('Browser.navigate', { url, pageProxyId, frameId: frame._id, referrer });
-    return { newDocumentId: result.loaderId, isSameDocument: !result.loaderId };
+    return { newDocumentId: result.loaderId };
   }
 
   private _onConsoleMessage(event: Protocol.Console.messageAddedPayload) {
@@ -377,7 +379,11 @@ export class WKPage implements PageDelegate {
   }
 
   async setExtraHTTPHeaders(headers: network.Headers): Promise<void> {
-    await this._updateState('Network.setExtraHTTPHeaders', { headers });
+    const copy = { ...headers };
+    const locale = this._page.context()._options.locale;
+    if (locale)
+      copy['Accept-Language'] = locale;
+    await this._updateState('Network.setExtraHTTPHeaders', { headers: copy });
   }
 
   async setEmulateMedia(mediaType: types.MediaType | null, colorScheme: types.ColorScheme | null): Promise<void> {
@@ -390,7 +396,7 @@ export class WKPage implements PageDelegate {
   }
 
   async _updateViewport(updateTouch: boolean): Promise<void> {
-    let viewport = this._page.browserContext()._options.viewport || { width: 0, height: 0 };
+    let viewport = this._page.context()._options.viewport || { width: 0, height: 0 };
     const viewportSize = this._page._state.viewportSize;
     if (viewportSize)
       viewport = { ...viewport, ...viewportSize };
@@ -545,6 +551,17 @@ export class WKPage implements PageDelegate {
     return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
   }
 
+  async scrollRectIntoViewIfNeeded(handle: dom.ElementHandle, rect?: types.Rect): Promise<void> {
+    await this._session.send('DOM.scrollIntoViewIfNeeded', {
+      objectId: toRemoteObject(handle).objectId!,
+      rect,
+    }).catch(e => {
+      if (e instanceof Error && e.message.includes('Node does not have a layout object'))
+        e.message = 'Node is either not visible or not an HTMLElement';
+      throw e;
+    });
+  }
+
   async getContentQuads(handle: dom.ElementHandle): Promise<types.Quad[] | null> {
     const result = await this._session.send('DOM.getContentQuads', {
       objectId: toRemoteObject(handle).objectId!
@@ -580,10 +597,6 @@ export class WKPage implements PageDelegate {
 
   async getAccessibilityTree(needle?: dom.ElementHandle): Promise<{tree: accessibility.AXNode, needle: accessibility.AXNode | null}> {
     return getAccessibilityTree(this._session, needle);
-  }
-
-  coverage(): Coverage | undefined {
-    return undefined;
   }
 
   async getFrameElement(frame: frames.Frame): Promise<dom.ElementHandle> {

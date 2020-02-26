@@ -19,22 +19,7 @@ import { Page } from './page';
 import * as network from './network';
 import * as types from './types';
 import { helper } from './helper';
-
-export interface BrowserContextDelegate {
-  pages(): Promise<Page[]>;
-  existingPages(): Page[];
-  newPage(): Promise<Page>;
-  close(): Promise<void>;
-
-  cookies(): Promise<network.NetworkCookie[]>;
-  setCookies(cookies: network.SetNetworkCookieParam[]): Promise<void>;
-  clearCookies(): Promise<void>;
-
-  setPermissions(origin: string, permissions: string[]): Promise<void>;
-  clearPermissions(): Promise<void>;
-
-  setGeolocation(geolocation: types.Geolocation | null): Promise<void>;
-}
+import { TimeoutSettings } from './timeoutSettings';
 
 export type BrowserContextOptions = {
   viewport?: types.Viewport | null,
@@ -42,90 +27,50 @@ export type BrowserContextOptions = {
   javaScriptEnabled?: boolean,
   bypassCSP?: boolean,
   userAgent?: string,
+  locale?: string,
   timezoneId?: string,
   geolocation?: types.Geolocation,
   permissions?: { [key: string]: string[] };
 };
 
-export class BrowserContext {
-  private readonly _delegate: BrowserContextDelegate;
+export interface BrowserContext {
+  setDefaultNavigationTimeout(timeout: number): void;
+  setDefaultTimeout(timeout: number): void;
+  pages(): Promise<Page[]>;
+  newPage(): Promise<Page>;
+  cookies(...urls: string[]): Promise<network.NetworkCookie[]>;
+  setCookies(cookies: network.SetNetworkCookieParam[]): Promise<void>;
+  clearCookies(): Promise<void>;
+  setPermissions(origin: string, permissions: string[]): Promise<void>;
+  clearPermissions(): Promise<void>;
+  setGeolocation(geolocation: types.Geolocation | null): Promise<void>;
+  close(): Promise<void>;
+
+  _existingPages(): Page[];
+  readonly _timeoutSettings: TimeoutSettings;
   readonly _options: BrowserContextOptions;
-  private _closed = false;
+}
 
-  constructor(delegate: BrowserContextDelegate, options: BrowserContextOptions) {
-    this._delegate = delegate;
-    this._options = { ...options };
-    if (!this._options.viewport && this._options.viewport !== null)
-      this._options.viewport = { width: 800, height: 600 };
-    if (this._options.viewport)
-      this._options.viewport = { ...this._options.viewport };
-    if (this._options.geolocation)
-      this._options.geolocation = verifyGeolocation(this._options.geolocation);
-  }
-
-  async _initialize() {
-    const entries = Object.entries(this._options.permissions || {});
-    await Promise.all(entries.map(entry => this.setPermissions(entry[0], entry[1])));
-    if (this._options.geolocation)
-      await this.setGeolocation(this._options.geolocation);
-  }
-
-  _existingPages(): Page[] {
-    return this._delegate.existingPages();
-  }
-
-  async pages(): Promise<Page[]> {
-    return this._delegate.pages();
-  }
-
-  async newPage(url?: string): Promise<Page> {
-    const page = await this._delegate.newPage();
-    if (url)
-      await page.goto(url);
-    return page;
-  }
-
-  async cookies(...urls: string[]): Promise<network.NetworkCookie[]> {
-    return network.filterCookies(await this._delegate.cookies(), urls);
-  }
-
-  async setCookies(cookies: network.SetNetworkCookieParam[]) {
-    await this._delegate.setCookies(network.rewriteCookies(cookies));
-  }
-
-  async clearCookies() {
-    await this._delegate.clearCookies();
-  }
-
-  async setPermissions(origin: string, permissions: string[]): Promise<void> {
-    await this._delegate.setPermissions(origin, permissions);
-  }
-
-  async clearPermissions() {
-    await this._delegate.clearPermissions();
-  }
-
-  async setGeolocation(geolocation: types.Geolocation | null): Promise<void> {
-    if (geolocation)
-      geolocation = verifyGeolocation(geolocation);
-    this._options.geolocation = geolocation || undefined;
-    await this._delegate.setGeolocation(geolocation);
-  }
-
-  async close() {
-    if (this._closed)
-      return;
-    await this._delegate.close();
-    this._closed = true;
-  }
-
-  static validateOptions(options: BrowserContextOptions) {
-    if (options.geolocation)
-      verifyGeolocation(options.geolocation);
+export function assertBrowserContextIsNotOwned(context: BrowserContext) {
+  const pages = context._existingPages();
+  for (const page of pages) {
+    if (page._ownedContext)
+      throw new Error('Please use browser.newContext() for multi-page scripts that share the context.');
   }
 }
 
-function verifyGeolocation(geolocation: types.Geolocation): types.Geolocation {
+export function validateBrowserContextOptions(options: BrowserContextOptions): BrowserContextOptions {
+  const result = { ...options };
+  if (!result.viewport && result.viewport !== null)
+    result.viewport = { width: 1280, height: 720 };
+  if (result.viewport)
+    result.viewport = { ...result.viewport };
+  if (result.geolocation)
+    result.geolocation = verifyGeolocation(result.geolocation);
+  return result;
+}
+
+export function verifyGeolocation(geolocation: types.Geolocation): types.Geolocation {
   const result = { ...geolocation };
   result.accuracy = result.accuracy || 0;
   const { longitude, latitude, accuracy } = result;

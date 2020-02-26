@@ -17,6 +17,9 @@
 
 const utils = require('./utils');
 
+/**
+ * @type {PageTestSuite}
+ */
 module.exports.describe = function({testRunner, expect, playwright, FFOX, CHROMIUM, WEBKIT}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit, dit} = testRunner;
@@ -56,13 +59,14 @@ module.exports.describe = function({testRunner, expect, playwright, FFOX, CHROMI
       await page.click('span');
       expect(await page.evaluate(() => window.CLICKED)).toBe(42);
     });
-    it('should not throw UnhandledPromiseRejection when page closes', async({newContext, server}) => {
-      const context = await newContext();
+    it('should not throw UnhandledPromiseRejection when page closes', async({browser, server}) => {
+      const context = await browser.newContext();
       const page = await context.newPage();
       await Promise.all([
         page.close(),
         page.mouse.click(1, 2),
       ]).catch(e => {});
+      await context.close();
     });
     it('should click the button after navigation ', async({page, server}) => {
       await page.goto(server.PREFIX + '/input/button.html');
@@ -78,14 +82,16 @@ module.exports.describe = function({testRunner, expect, playwright, FFOX, CHROMI
       await page.click('button');
       expect(await page.evaluate(() => result)).toBe('Clicked');
     });
-    it('should click with disabled javascript', async({newPage, server}) => {
-      const page = await newPage({ javaScriptEnabled: false });
+    it('should click with disabled javascript', async({browser, server}) => {
+      const context = await browser.newContext({ javaScriptEnabled: false });
+      const page = await context.newPage();
       await page.goto(server.PREFIX + '/wrappedlink.html');
       await Promise.all([
         page.click('a'),
         page.waitForNavigation()
       ]);
       expect(page.url()).toBe(server.PREFIX + '/wrappedlink.html#clicked');
+      await context.close();
     });
     it('should click when one of inline box children is outside of viewport', async({page, server}) => {
       await page.setContent(`
@@ -139,31 +145,24 @@ module.exports.describe = function({testRunner, expect, playwright, FFOX, CHROMI
       await page.click('button');
       expect(await page.evaluate(() => result)).toBe('Clicked');
     });
-    it('should waitFor hidden when already hidden', async({page, server}) => {
+    it('should not wait with false waitFor', async({page, server}) => {
       let error = null;
       await page.goto(server.PREFIX + '/input/button.html');
       await page.$eval('button', b => b.style.display = 'none');
-      await page.click('button', { waitFor: 'hidden' }).catch(e => error = e);
+      await page.click('button', { waitFor: false }).catch(e => error = e);
       expect(error.message).toBe('Node is either not visible or not an HTMLElement');
       expect(await page.evaluate(() => result)).toBe('Was not clicked');
     });
-    it('should waitFor hidden', async({page, server}) => {
-      let error = null;
+    it('should throw for non-boolean waitFor', async({page, server}) => {
       await page.goto(server.PREFIX + '/input/button.html');
-      const clicked = page.click('button', { waitFor: 'hidden' }).catch(e => error = e);
-      for (let i = 0; i < 5; i++)
-        await page.evaluate('1'); // Do a round trip.
-      expect(error).toBe(null);
-      await page.$eval('button', b => b.style.display = 'none');
-      await clicked;
-      expect(error.message).toBe('Node is either not visible or not an HTMLElement');
-      expect(await page.evaluate(() => result)).toBe('Was not clicked');
+      const error = await page.click('button', { waitFor: 'visible' }).catch(e => e);
+      expect(error.message).toBe('waitFor option should be a boolean, got "string"');
     });
     it('should waitFor visible', async({page, server}) => {
       let done = false;
       await page.goto(server.PREFIX + '/input/button.html');
       await page.$eval('button', b => b.style.display = 'none');
-      const clicked = page.click('button').then(() => done = true);
+      const clicked = page.click('button', { timeout: 0 }).then(() => done = true);
       for (let i = 0; i < 5; i++)
         await page.evaluate('1'); // Do a round trip.
       expect(done).toBe(false);
@@ -215,16 +214,17 @@ module.exports.describe = function({testRunner, expect, playwright, FFOX, CHROMI
     it('should fail to click a missing button', async({page, server}) => {
       await page.goto(server.PREFIX + '/input/button.html');
       let error = null;
-      await page.click('button.does-not-exist', { waitFor: 'nowait' }).catch(e => error = e);
+      await page.click('button.does-not-exist', { waitFor: false }).catch(e => error = e);
       expect(error.message).toBe('No node found for selector: button.does-not-exist');
     });
     // @see https://github.com/GoogleChrome/puppeteer/issues/161
-    it('should not hang with touch-enabled viewports', async({server, newContext}) => {
-      const context = await newContext({ viewport: playwright.devices['iPhone 6'].viewport });
+    it('should not hang with touch-enabled viewports', async({server, browser}) => {
+      const context = await browser.newContext({ viewport: playwright.devices['iPhone 6'].viewport });
       const page = await context.newPage();
       await page.mouse.down();
       await page.mouse.move(100, 10);
       await page.mouse.up();
+      await context.close();
     });
     it('should scroll and click the button', async({page, server}) => {
       await page.goto(server.PREFIX + '/input/scrollable.html');
@@ -283,6 +283,8 @@ module.exports.describe = function({testRunner, expect, playwright, FFOX, CHROMI
       expect(await frame.evaluate(() => window.result)).toBe('Clicked');
     });
     // @see https://github.com/GoogleChrome/puppeteer/issues/4110
+    // @see https://bugs.chromium.org/p/chromium/issues/detail?id=986390
+    // @see https://chromium-review.googlesource.com/c/chromium/src/+/1742784
     xit('should click the button with fixed position inside an iframe', async({page, server}) => {
       await page.goto(server.EMPTY_PAGE);
       await page.setViewportSize({width: 500, height: 500});
@@ -293,8 +295,8 @@ module.exports.describe = function({testRunner, expect, playwright, FFOX, CHROMI
       await frame.click('button');
       expect(await frame.evaluate(() => window.result)).toBe('Clicked');
     });
-    it('should click the button with deviceScaleFactor set', async({newContext, server}) => {
-      const context = await newContext({ viewport: {width: 400, height: 400, deviceScaleFactor: 5} });
+    it('should click the button with deviceScaleFactor set', async({browser, server}) => {
+      const context = await browser.newContext({ viewport: {width: 400, height: 400, deviceScaleFactor: 5} });
       const page = await context.newPage();
       expect(await page.evaluate(() => window.devicePixelRatio)).toBe(5);
       await page.setContent('<div style="width:100px;height:100px">spacer</div>');
@@ -303,37 +305,38 @@ module.exports.describe = function({testRunner, expect, playwright, FFOX, CHROMI
       const button = await frame.$('button');
       await button.click();
       expect(await frame.evaluate(() => window.result)).toBe('Clicked');
+      await context.close();
     });
-    it('should click the button with px border with relative point', async({page, server}) => {
+    it('should click the button with px border with offset', async({page, server}) => {
       await page.goto(server.PREFIX + '/input/button.html');
       await page.$eval('button', button => button.style.borderWidth = '8px');
-      await page.click('button', { relativePoint: { x: 20, y: 10 } });
+      await page.click('button', { offset: { x: 20, y: 10 } });
       expect(await page.evaluate(() => result)).toBe('Clicked');
       // Safari reports border-relative offsetX/offsetY.
       expect(await page.evaluate(() => offsetX)).toBe(WEBKIT ? 20 + 8 : 20);
       expect(await page.evaluate(() => offsetY)).toBe(WEBKIT ? 10 + 8 : 10);
     });
-    it('should click the button with em border with relative point', async({page, server}) => {
+    it('should click the button with em border with offset', async({page, server}) => {
       await page.goto(server.PREFIX + '/input/button.html');
       await page.$eval('button', button => button.style.borderWidth = '2em');
       await page.$eval('button', button => button.style.fontSize = '12px');
-      await page.click('button', { relativePoint: { x: 20, y: 10 } });
+      await page.click('button', { offset: { x: 20, y: 10 } });
       expect(await page.evaluate(() => result)).toBe('Clicked');
       // Safari reports border-relative offsetX/offsetY.
       expect(await page.evaluate(() => offsetX)).toBe(WEBKIT ? 12 * 2 + 20 : 20);
       expect(await page.evaluate(() => offsetY)).toBe(WEBKIT ? 12 * 2 + 10 : 10);
     });
-    it('should click a very large button with relative point', async({page, server}) => {
+    it.skip(FFOX)('should click a very large button with offset', async({page, server}) => {
       await page.goto(server.PREFIX + '/input/button.html');
       await page.$eval('button', button => button.style.borderWidth = '8px');
       await page.$eval('button', button => button.style.height = button.style.width = '2000px');
-      await page.click('button', { relativePoint: { x: 1900, y: 1910 } });
+      await page.click('button', { offset: { x: 1900, y: 1910 } });
       expect(await page.evaluate(() => window.result)).toBe('Clicked');
       // Safari reports border-relative offsetX/offsetY.
       expect(await page.evaluate(() => offsetX)).toBe(WEBKIT ? 1900 + 8 : 1900);
       expect(await page.evaluate(() => offsetY)).toBe(WEBKIT ? 1910 + 8 : 1910);
     });
-    xit('should click a button in scrolling container with relative point', async({page, server}) => {
+    it.skip(FFOX)('should click a button in scrolling container with offset', async({page, server}) => {
       await page.goto(server.PREFIX + '/input/button.html');
       await page.$eval('button', button => {
         const container = document.createElement('div');
@@ -344,11 +347,128 @@ module.exports.describe = function({testRunner, expect, playwright, FFOX, CHROMI
         container.appendChild(button);
         button.style.height = '2000px';
         button.style.width = '2000px';
+        button.style.borderWidth = '8px';
       });
-      await page.click('button', { relativePoint: { x: 1900, y: 1910 } });
+      await page.click('button', { offset: { x: 1900, y: 1910 } });
       expect(await page.evaluate(() => window.result)).toBe('Clicked');
-      expect(await page.evaluate(() => offsetX)).toBe(1900);
-      expect(await page.evaluate(() => offsetY)).toBe(1910);
+      // Safari reports border-relative offsetX/offsetY.
+      expect(await page.evaluate(() => offsetX)).toBe(WEBKIT ? 1900 + 8 : 1900);
+      expect(await page.evaluate(() => offsetY)).toBe(WEBKIT ? 1910 + 8 : 1910);
+    });
+    it('should click the button with offset with page scale', async({browser, server}) => {
+      const context = await browser.newContext({ viewport: { width: 400, height: 400, isMobile: true} });
+      const page = await context.newPage();
+      await page.goto(server.PREFIX + '/input/button.html');
+      await page.$eval('button', button => {
+        button.style.borderWidth = '8px';
+        document.body.style.margin = '0';
+      });
+      await page.click('button', { offset: { x: 20, y: 10 } });
+      expect(await page.evaluate(() => result)).toBe('Clicked');
+      let expected = { x: 28, y: 18 };  // 20;10 + 8px of border in each direction
+      if (WEBKIT) {
+        // WebKit rounds up during css -> dip -> css conversion.
+        expected = { x: 29, y: 19 };
+      } else if (CHROMIUM) {
+        // Chromium rounds down during css -> dip -> css conversion.
+        expected = { x: 27, y: 18 };
+      }
+      expect(await page.evaluate(() => pageX)).toBe(expected.x);
+      expect(await page.evaluate(() => pageY)).toBe(expected.y);
+      await context.close();
+    });
+
+    it('should wait for stable position', async({page, server}) => {
+      await page.goto(server.PREFIX + '/input/button.html');
+      await page.$eval('button', button => {
+        button.style.transition = 'margin 500ms linear 0s';
+        button.style.marginLeft = '200px';
+        button.style.borderWidth = '0';
+        button.style.width = '200px';
+        button.style.height = '20px';
+        // Set display to "block" - otherwise Firefox layouts with non-even
+        // values on Linux.
+        button.style.display = 'block';
+        document.body.style.margin = '0';
+      });
+      await page.click('button');
+      expect(await page.evaluate(() => window.result)).toBe('Clicked');
+      expect(await page.evaluate(() => pageX)).toBe(300);
+      expect(await page.evaluate(() => pageY)).toBe(10);
+    });
+    it('should timeout waiting for stable position', async({page, server}) => {
+      await page.goto(server.PREFIX + '/input/button.html');
+      const button = await page.$('button');
+      await button.evaluate(button => {
+        button.style.transition = 'margin 5s linear 0s';
+        button.style.marginLeft = '200px';
+      });
+      const error = await button.click({ timeout: 100 }).catch(e => e);
+      expect(error.message).toContain('timeout 100ms exceeded');
+    });
+    it('should wait for becoming hit target', async({page, server}) => {
+      await page.goto(server.PREFIX + '/input/button.html');
+      await page.$eval('button', button => {
+        button.style.borderWidth = '0';
+        button.style.width = '200px';
+        button.style.height = '20px';
+        document.body.style.margin = '0';
+        document.body.style.position = 'relative';
+        const flyOver = document.createElement('div');
+        flyOver.className = 'flyover';
+        flyOver.style.position = 'absolute';
+        flyOver.style.width = '400px';
+        flyOver.style.height = '20px';
+        flyOver.style.left = '-200px';
+        flyOver.style.top = '0';
+        flyOver.style.background = 'red';
+        document.body.appendChild(flyOver);
+      });
+      let clicked = false;
+      const clickPromise = page.click('button').then(() => clicked = true);
+      expect(clicked).toBe(false);
+
+      await page.$eval('.flyover', flyOver => flyOver.style.left = '0');
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      expect(clicked).toBe(false);
+
+      await page.$eval('.flyover', flyOver => flyOver.style.left = '200px');
+      await clickPromise;
+      expect(clicked).toBe(true);
+      expect(await page.evaluate(() => window.result)).toBe('Clicked');
+    });
+    it('should timeout waiting for hit target', async({page, server}) => {
+      await page.goto(server.PREFIX + '/input/button.html');
+      const button = await page.$('button');
+      await page.evaluate(() => {
+        document.body.style.position = 'relative';
+        const blocker = document.createElement('div');
+        blocker.style.position = 'absolute';
+        blocker.style.width = '400px';
+        blocker.style.height = '20px';
+        blocker.style.left = '0';
+        blocker.style.top = '0';
+        document.body.appendChild(blocker);
+      });
+      const error = await button.click({ timeout: 100 }).catch(e => e);
+      expect(error.message).toContain('timeout 100ms exceeded');
+    });
+    it('should fail when obscured and not waiting for hit target', async({page, server}) => {
+      await page.goto(server.PREFIX + '/input/button.html');
+      const button = await page.$('button');
+      await page.evaluate(() => {
+        document.body.style.position = 'relative';
+        const blocker = document.createElement('div');
+        blocker.style.position = 'absolute';
+        blocker.style.width = '400px';
+        blocker.style.height = '20px';
+        blocker.style.left = '0';
+        blocker.style.top = '0';
+        document.body.appendChild(blocker);
+      });
+      await button.click({ waitFor: false });
+      expect(await page.evaluate(() => window.result)).toBe('Was not clicked');
     });
 
     it('should update modifiers correctly', async({page, server}) => {
@@ -367,7 +487,7 @@ module.exports.describe = function({testRunner, expect, playwright, FFOX, CHROMI
       await page.click('button');
       expect(await page.evaluate(() => shiftKey)).toBe(false);
     });
-    it.skip(CHROMIUM)('should click an offscreen element when scroll-behavior is smooth', async({page}) => {
+    it('should click an offscreen element when scroll-behavior is smooth', async({page}) => {
       await page.setContent(`
         <div style="border: 1px solid black; height: 500px; overflow: auto; width: 500px; scroll-behavior: smooth">
         <button style="margin-top: 2000px" onClick="window.clicked = true">hi</button>
@@ -376,35 +496,51 @@ module.exports.describe = function({testRunner, expect, playwright, FFOX, CHROMI
       await page.click('button');
       expect(await page.evaluate('window.clicked')).toBe(true);
     });
-    it.skip(true)('should click on an animated button', async({page}) => {
-      const buttonSize = 50;
+    xit('should fail to click a button animated via CSS animations and setInterval', async({page}) => {
+      // This test has a setInterval that consistently animates a button.
+      // It checks that we detect the button to be continuously animating, and never try to click it.
+      // This test exposes two issues:
+      // - Chromium headless does not issue rafs between first and second animateLeft() calls.
+      // - Chromium and WebKit keep element bounds the same when for 2 frames when changing left to a new value.
+      const buttonSize = 10;
       const containerWidth = 500;
-      const transition = 500;
+      const transition = 100;
       await page.setContent(`
-      <html>
-      <body>
-      <div style="border: 1px solid black; height: 50px; overflow: auto; width: ${containerWidth}px;">
-      <button id="button" style="height: ${buttonSize}px; width: ${buttonSize}px; transition: left ${transition}ms linear 0s; left: 0; position: relative" onClick="window.clicked++">hi</button>
-      </div>
-      </body>
-      <script>
-      const animateLeft = () => {
-        const button = document.querySelector('#button');
-        document.querySelector('#button').style.left = button.style.left === '0px' ? '${containerWidth - buttonSize}px' : '0px';
-      };
-      window.clicked = 0;
-      window.setTimeout(animateLeft, 0);
-      window.setInterval(animateLeft, ${transition});
-      </script>
-      </html>
+        <html>
+        <body>
+        <div style="border: 1px solid black; height: 50px; overflow: auto; width: ${containerWidth}px;">
+        <button style="border: none; height: ${buttonSize}px; width: ${buttonSize}px; transition: left ${transition}ms linear 0s; left: 0; position: relative" onClick="window.clicked++"></button>
+        </div>
+        </body>
+        <script>
+          window.atLeft = true;
+          const animateLeft = () => {
+            const button = document.querySelector('button');
+            button.style.left = window.atLeft ? '${containerWidth - buttonSize}px' : '0px';
+            console.log('set ' + button.style.left);
+            window.atLeft = !window.atLeft;
+          };
+          window.clicked = 0;
+          const dump = () => {
+            const button = document.querySelector('button');
+            const clientRect = button.getBoundingClientRect();
+            const rect = { x: clientRect.top, y: clientRect.left, width: clientRect.width, height: clientRect.height };
+            requestAnimationFrame(dump);
+          };
+          dump();
+        </script>
+        </html>
       `);
-      await page.click('button');
-      expect(await page.evaluate('window.clicked')).toBe(1);
-      expect(await page.evaluate('document.querySelector("#button").style.left')).toBe(`${containerWidth - buttonSize}px`);
-      await new Promise(resolve => setTimeout(resolve, 500));
-      await page.click('button');
-      expect(await page.evaluate('window.clicked')).toBe(2);
-      expect(await page.evaluate('document.querySelector("#button").style.left')).toBe('0px');
+      await page.evaluate(transition => {
+        window.setInterval(animateLeft, transition);
+        animateLeft();
+      }, transition);
+      const error1 = await page.click('button', { timeout: 250 }).catch(e => e);
+      expect(await page.evaluate('window.clicked')).toBe(0);
+      expect(error1.message).toContain('timeout 250ms exceeded');
+      const error2 = await page.click('button', { timeout: 250 }).catch(e => e);
+      expect(await page.evaluate('window.clicked')).toBe(0);
+      expect(error2.message).toContain('timeout 250ms exceeded');
     });
   });
 

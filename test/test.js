@@ -29,7 +29,7 @@ require('events').defaultMaxListeners *= parallel;
 
 let timeout = process.env.CI ? 30 * 1000 : 10 * 1000;
 if (!isNaN(process.env.TIMEOUT))
-  timeout = parseInt(process.env.TIMEOUT, 10);
+  timeout = parseInt(process.env.TIMEOUT * 1000, 10);
 const testRunner = new TestRunner({
   timeout,
   parallel,
@@ -80,18 +80,22 @@ beforeEach(async({server, httpsServer}) => {
 const products = ['WebKit', 'Firefox', 'Chromium'];
 let product;
 let events;
+let missingCoverage;
 if (process.env.BROWSER === 'firefox') {
   product = 'Firefox';
   events = {
     ...require('../lib/events').Events,
     ...require('../lib/chromium/events').Events,
   };
+  missingCoverage = ['browserContext.setGeolocation', 'elementHandle.scrollIntoViewIfNeeded', 'page.setOfflineMode'];
 } else if (process.env.BROWSER === 'webkit') {
   product = 'WebKit';
   events = require('../lib/events').Events;
+  missingCoverage = ['browserContext.clearPermissions'];
 } else {
   product = 'Chromium';
   events = require('../lib/events').Events;
+  missingCoverage = [];
 }
 
 describe(product, () => {
@@ -108,7 +112,7 @@ describe(product, () => {
         return;
       filteredApi[name] = api[name];
     });
-    utils.recordAPICoverage(testRunner, filteredApi, events);
+    utils.recordAPICoverage(testRunner, filteredApi, events, missingCoverage);
   }
 });
 
@@ -120,7 +124,6 @@ if (process.env.CI && testRunner.hasFocusedTestsOrSuites()) {
 new Reporter(testRunner, {
   verbose: process.argv.includes('--verbose'),
   summary: !process.argv.includes('--verbose'),
-  projectFolder: utils.projectRoot(),
   showSlowTests: process.env.CI ? 5 : 0,
   showSkippedTests: 10,
 });
