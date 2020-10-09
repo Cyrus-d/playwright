@@ -14,53 +14,10 @@
  * limitations under the License.
  */
 
-const {runCommands, ensureReleasedAPILinks} = require('.');
+const {runCommands} = require('.');
 const Source = require('../Source');
-const {TestRunner, Reporter, Matchers}  = require('../../testrunner/');
-const runner = new TestRunner();
-new Reporter(runner);
-
-const {describe, xdescribe, fdescribe} = runner;
-const {it, fit, xit} = runner;
-const {beforeAll, beforeEach, afterAll, afterEach} = runner;
-const {expect} = new Matchers();
-
-describe('ensureReleasedAPILinks', function() {
-  it('should work with non-release version', function() {
-    const source = new Source('doc.md', `
-      [API](https://github.com/microsoft/playwright/blob/v1.1.0/docs/api.md#class-page)
-    `);
-    const messages = ensureReleasedAPILinks([source], '1.3.0-post');
-    expect(messages.length).toBe(1);
-    expect(messages[0].type).toBe('warning');
-    expect(messages[0].text).toContain('doc.md');
-    expect(source.text()).toBe(`
-      [API](https://github.com/microsoft/playwright/blob/v1.3.0/docs/api.md#class-page)
-    `);
-  });
-  it('should work with release version', function() {
-    const source = new Source('doc.md', `
-      [API](https://github.com/microsoft/playwright/blob/v1.1.0/docs/api.md#class-page)
-    `);
-    const messages = ensureReleasedAPILinks([source], '1.3.0');
-    expect(messages.length).toBe(1);
-    expect(messages[0].type).toBe('warning');
-    expect(messages[0].text).toContain('doc.md');
-    expect(source.text()).toBe(`
-      [API](https://github.com/microsoft/playwright/blob/v1.3.0/docs/api.md#class-page)
-    `);
-  });
-  it('should keep master links intact', function() {
-    const source = new Source('doc.md', `
-      [API](https://github.com/microsoft/playwright/blob/master/docs/api.md#class-page)
-    `);
-    const messages = ensureReleasedAPILinks([source], '1.3.0');
-    expect(messages.length).toBe(0);
-    expect(source.text()).toBe(`
-      [API](https://github.com/microsoft/playwright/blob/master/docs/api.md#class-page)
-    `);
-  });
-});
+const { fixtures } = require('@playwright/test-runner');
+const { describe, it, expect } = fixtures;
 
 describe('runCommands', function() {
   const OPTIONS_REL = {
@@ -89,21 +46,19 @@ describe('runCommands', function() {
         Playwright <!-- gen:version -->XXX<!-- gen:stop -->
       `);
       const messages = runCommands([source], OPTIONS_REL);
-      expect(messages.length).toBe(1);
-      expect(messages[0].type).toBe('warning');
-      expect(messages[0].text).toContain('doc.md');
+      expect(messages.length).toBe(0);
+      expect(source.hasUpdatedText()).toBe(true);
       expect(source.text()).toBe(`
         Playwright <!-- gen:version -->v1.3.0<!-- gen:stop -->
       `);
     });
-    it('should work for *-post versions', function() {
+    it('should work for pre-release versions', function() {
       const source = new Source('doc.md', `
         Playwright <!-- gen:version -->XXX<!-- gen:stop -->
       `);
       const messages = runCommands([source], OPTIONS_DEV);
-      expect(messages.length).toBe(1);
-      expect(messages[0].type).toBe('warning');
-      expect(messages[0].text).toContain('doc.md');
+      expect(messages.length).toBe(0);
+      expect(source.hasUpdatedText()).toBe(true);
       expect(source.text()).toBe(`
         Playwright <!-- gen:version -->Tip-Of-Tree<!-- gen:stop -->
       `);
@@ -123,30 +78,6 @@ describe('runCommands', function() {
       expect(messages[0].text).toContain(`Failed to find 'gen:stop'`);
     });
   });
-  describe('gen:empty-if-release', function() {
-    it('should clear text when release version', function() {
-      const source = new Source('doc.md', `
-        <!-- gen:empty-if-release -->XXX<!-- gen:stop -->
-      `);
-      const messages = runCommands([source], OPTIONS_REL);
-      expect(messages.length).toBe(1);
-      expect(messages[0].type).toBe('warning');
-      expect(messages[0].text).toContain('doc.md');
-      expect(source.text()).toBe(`
-        <!-- gen:empty-if-release --><!-- gen:stop -->
-      `);
-    });
-    it('should keep text when non-release version', function() {
-      const source = new Source('doc.md', `
-        <!-- gen:empty-if-release -->XXX<!-- gen:stop -->
-      `);
-      const messages = runCommands([source], OPTIONS_DEV);
-      expect(messages.length).toBe(0);
-      expect(source.text()).toBe(`
-        <!-- gen:empty-if-release -->XXX<!-- gen:stop -->
-      `);
-    });
-  });
   describe('gen:toc', function() {
     it('should work', () => {
       const source = new Source('doc.md', `<!-- gen:toc -->XXX<!-- gen:stop -->
@@ -154,9 +85,8 @@ describe('runCommands', function() {
         #### page.$
         #### page.$$`);
       const messages = runCommands([source], OPTIONS_REL);
-      expect(messages.length).toBe(1);
-      expect(messages[0].type).toBe('warning');
-      expect(messages[0].text).toContain('doc.md');
+      expect(messages.length).toBe(0);
+      expect(source.hasUpdatedText()).toBe(true);
       expect(source.text()).toBe(`<!-- gen:toc -->
 - [class: page](#class-page)
   * [page.$](#page)
@@ -175,9 +105,8 @@ describe('runCommands', function() {
         \`\`\`
       `);
       const messages = runCommands([source], OPTIONS_REL);
-      expect(messages.length).toBe(1);
-      expect(messages[0].type).toBe('warning');
-      expect(messages[0].text).toContain('doc.md');
+      expect(messages.length).toBe(0);
+      expect(source.hasUpdatedText()).toBe(true);
       expect(source.text()).toBe(`<!-- gen:toc -->
 - [class: page](#class-page)
 <!-- gen:stop -->
@@ -193,9 +122,8 @@ describe('runCommands', function() {
         ### some [link](#foobar) here
       `);
       const messages = runCommands([source], OPTIONS_REL);
-      expect(messages.length).toBe(1);
-      expect(messages[0].type).toBe('warning');
-      expect(messages[0].text).toContain('doc.md');
+      expect(messages.length).toBe(0);
+      expect(source.hasUpdatedText()).toBe(true);
       expect(source.text()).toBe(`<!-- gen:toc -->
 - [some link here](#some-link-here)
 <!-- gen:stop -->
@@ -212,9 +140,8 @@ describe('runCommands', function() {
         ## Second
       `);
       const messages = runCommands([source], OPTIONS_REL);
-      expect(messages.length).toBe(1);
-      expect(messages[0].type).toBe('warning');
-      expect(messages[0].text).toContain('doc.md');
+      expect(messages.length).toBe(0);
+      expect(source.hasUpdatedText()).toBe(true);
       expect(source.text()).toBe(`
         ## First
         <!-- gen:toc -->
@@ -232,68 +159,41 @@ describe('runCommands', function() {
   it('should work with multiple commands', function() {
     const source = new Source('doc.md', `
       <!-- gen:version -->xxx<!-- gen:stop -->
-      <!-- gen:empty-if-release -->yyy<!-- gen:stop -->
       <!-- gen:version -->zzz<!-- gen:stop -->
     `);
     const messages = runCommands([source], OPTIONS_REL);
-    expect(messages.length).toBe(1);
-    expect(messages[0].type).toBe('warning');
-    expect(messages[0].text).toContain('doc.md');
+    expect(messages.length).toBe(0);
+    expect(source.hasUpdatedText()).toBe(true);
     expect(source.text()).toBe(`
       <!-- gen:version -->v1.3.0<!-- gen:stop -->
-      <!-- gen:empty-if-release --><!-- gen:stop -->
       <!-- gen:version -->v1.3.0<!-- gen:stop -->
     `);
   });
-  describe('gen:chromium-version-if-release', function() {
-    it('should work for release', function() {
+  describe('gen:chromium-version', function() {
+    it('should work', function() {
       const source = new Source('doc.md', `
-        Playwright <!-- gen:chromium-version-if-release -->XXX<!-- gen:stop -->
+        Playwright <!-- gen:chromium-version -->XXX<!-- gen:stop -->
       `);
       const messages = runCommands([source], OPTIONS_REL);
-      expect(messages.length).toBe(1);
-      expect(messages[0].type).toBe('warning');
-      expect(messages[0].text).toContain('doc.md');
-      expect(source.text()).toBe(`
-        Playwright <!-- gen:chromium-version-if-release -->80.0.4004.0<!-- gen:stop -->
-      `);
-    });
-    it('should be noop for dev', function() {
-      const source = new Source('doc.md', `
-        Playwright <!-- gen:chromium-version-if-release -->XXX<!-- gen:stop -->
-      `);
-      const messages = runCommands([source], OPTIONS_DEV);
       expect(messages.length).toBe(0);
+      expect(source.hasUpdatedText()).toBe(true);
       expect(source.text()).toBe(`
-        Playwright <!-- gen:chromium-version-if-release -->XXX<!-- gen:stop -->
+        Playwright <!-- gen:chromium-version -->80.0.4004.0<!-- gen:stop -->
       `);
     });
   });
   describe('gen:firefox-version', function() {
-    it('should work for release', function() {
+    it('should work', function() {
       const source = new Source('doc.md', `
-        Playwright <!-- gen:firefox-version-if-release -->XXX<!-- gen:stop -->
+        Playwright <!-- gen:firefox-version -->XXX<!-- gen:stop -->
       `);
       const messages = runCommands([source], OPTIONS_REL);
-      expect(messages.length).toBe(1);
-      expect(messages[0].type).toBe('warning');
-      expect(messages[0].text).toContain('doc.md');
-      expect(source.text()).toBe(`
-        Playwright <!-- gen:firefox-version-if-release -->73.0b3<!-- gen:stop -->
-      `);
-    });
-    it('should be noop for dev', function() {
-      const source = new Source('doc.md', `
-        Playwright <!-- gen:firefox-version-if-release -->XXX<!-- gen:stop -->
-      `);
-      const messages = runCommands([source], OPTIONS_DEV);
       expect(messages.length).toBe(0);
+      expect(source.hasUpdatedText()).toBe(true);
       expect(source.text()).toBe(`
-        Playwright <!-- gen:firefox-version-if-release -->XXX<!-- gen:stop -->
+        Playwright <!-- gen:firefox-version -->73.0b3<!-- gen:stop -->
       `);
     });
   });
 });
-
-runner.run();
 

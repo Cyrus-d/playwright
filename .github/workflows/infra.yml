@@ -4,26 +4,22 @@ on:
   push:
     branches:
       - master
+      - release-*
   pull_request:
     branches:
       - master
-
-env:
-  CI: true
+      - release-*
 
 jobs:
   doc-and-lint:
     name: "docs & lint"
     runs-on: ubuntu-18.04
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v2
     - uses: actions/setup-node@v1
       with:
         node-version: 10.15
-    - name: install required packages
-      run: |
-        sudo apt-get update
-        sudo apt-get install libgbm-dev
-        sudo apt-get install xvfb
-    - run: npm install
+    - uses: microsoft/playwright-github-action@v1
+    - run: npm ci
+    - run: npm run build
     - run: npm run lint

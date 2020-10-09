@@ -66,6 +66,7 @@ class TestServer {
     this._wsServer.on('connection', this._onWebSocketConnection.bind(this));
     this._server.listen(port);
     this._dirPath = dirPath;
+    this.debugServer = require('debug')('pw:server');
 
     this._startTime = new Date();
     this._cachedPathPrefix = null;
@@ -82,6 +83,13 @@ class TestServer {
     this._gzipRoutes = new Set();
     /** @type {!Map<string, !Promise>} */
     this._requestSubscribers = new Map();
+
+    const protocol = sslOptions ? 'https' : 'http';
+    this.PORT = port;
+    this.PREFIX = `${protocol}://localhost:${port}`;
+    this.CROSS_PROCESS_PREFIX = `${protocol}://127.0.0.1:${port}`;
+    this.EMPTY_PAGE = `${protocol}://localhost:${port}/empty.html`;
+  
   }
 
   _onSocket(socket) {
@@ -108,6 +116,7 @@ class TestServer {
    * @param {string} password
    */
   setAuth(path, username, password) {
+    this.debugServer(`set auth for ${path} to ${username}:${password}`);
     this._auths.set(path, {username, password});
   }
 
@@ -181,8 +190,8 @@ class TestServer {
   }
 
   /**
-   * @param {http.IncomingMessage} request 
-   * @param {http.ServerResponse} response 
+   * @param {http.IncomingMessage} request
+   * @param {http.ServerResponse} response
    */
   _onRequest(request, response) {
     request.on('error', error => {
@@ -192,15 +201,19 @@ class TestServer {
         throw error;
     });
     request.postBody = new Promise(resolve => {
-      let body = '';
-      request.on('data', chunk => body += chunk);
+      let body = Buffer.from([]);
+      request.on('data', chunk => body = Buffer.concat([body, chunk]));
       request.on('end', () => resolve(body));
     });
     const pathName = url.parse(request.url).path;
+    this.debugServer(`request ${request.method} ${pathName}`);
     if (this._auths.has(pathName)) {
       const auth = this._auths.get(pathName);
       const credentials = Buffer.from((request.headers.authorization || '').split(' ')[1] || '', 'base64').toString();
+      this.debugServer(`request credentials ${credentials}`);
+      this.debugServer(`actual credentials ${auth.username}:${auth.password}`);
       if (credentials !== `${auth.username}:${auth.password}`) {
+        this.debugServer(`request write www-auth`);
         response.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Secure Area"' });
         response.end('HTTP Error 401 Unauthorized: Access is denied');
         return;
@@ -215,20 +228,22 @@ class TestServer {
     if (handler) {
       handler.call(null, request, response);
     } else {
-      const pathName = url.parse(request.url).path;
-      this.serveFile(request, response, pathName);
+      this.serveFile(request, response);
     }
   }
 
   /**
    * @param {!http.IncomingMessage} request
    * @param {!http.ServerResponse} response
-   * @param {string} pathName
+   * @param {string|undefined} filePath
    */
-  serveFile(request, response, pathName) {
-    if (pathName === '/')
-      pathName = '/index.html';
-    const filePath = path.join(this._dirPath, pathName.substring(1));
+  serveFile(request, response, filePath) {
+    let pathName = url.parse(request.url).path;
+    if (!filePath) {
+      if (pathName === '/')
+        pathName = '/index.html';
+      filePath = path.join(this._dirPath, pathName.substring(1));
+    }
 
     if (this._cachedPathPrefix !== null && filePath.startsWith(this._cachedPathPrefix)) {
       if (request.headers['if-modified-since']) {

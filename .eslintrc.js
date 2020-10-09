@@ -1,8 +1,7 @@
 module.exports = {
     parser: '@typescript-eslint/parser',
-    plugins: ['@typescript-eslint'],
+    plugins: ['@typescript-eslint', 'notice'],
     parserOptions: {
-      project: './tsconfig.json',
       ecmaVersion: 9,
       sourceType: 'module',
     },
@@ -108,7 +107,10 @@ module.exports = {
             "beforeColon": false
         }],
 
-        // type-aware rules
-        "@typescript-eslint/no-unnecessary-type-assertion": 2,
+        // copyright
+        "notice/notice": [2, {
+            "mustMatch": "Copyright",
+            "templateFile": "./utils/copyright.js",
+        }],
     }
 };
